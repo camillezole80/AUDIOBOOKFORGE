@@ -14,10 +14,7 @@ let package = Package(
         .executableTarget(
             name: "AudiobookForge",
             dependencies: [],
-            path: "AudiobookForge",
-            resources: [
-                .process("Resources")
-            ]
+            path: "AudiobookForge"
         )
     ]
 )
