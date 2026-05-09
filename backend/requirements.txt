@@ -1,0 +1,14 @@
+# Dépendances Python pour AudiobookForge
+# Installation : pip install -r requirements.txt
+
+# Extraction de texte
+ebooklib>=0.18
+beautifulsoup4>=4.12
+pymupdf>=1.23
+python-docx>=1.1
+
+# Synthèse vocale (mlx-speech)
+# mlx-speech>=0.1  # À installer séparément sur Mac Apple Silicon
+# mlx>=0.15        # Framework MLX Apple
+
+# (requests retiré — non utilisé dans les scripts actuels)
