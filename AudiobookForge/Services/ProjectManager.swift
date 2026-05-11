@@ -8,6 +8,8 @@ class ProjectManager: ObservableObject {
     @Published var currentProject: Project?
 
     private let projectsDirectory: String
+    private let pathResolver = PathResolver.shared
+    private let logger = Logger.shared
 
     private init() {
         let baseDir = FileManager.default.homeDirectoryForCurrentUser
@@ -21,6 +23,7 @@ class ProjectManager: ObservableObject {
             withIntermediateDirectories: true
         )
 
+        logger.info("ProjectManager initialized. Projects directory: \(projectsDirectory)")
         loadProjects()
     }
 
@@ -34,7 +37,17 @@ class ProjectManager: ObservableObject {
 
         // Copier le fichier source
         let destPath = "\(project.projectDirectory)/source.\(fileType.rawValue.lowercased())"
-        try FileManager.default.copyItem(atPath: sourcePath, toPath: destPath)
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+
+        // Accès sécurisé au fichier (NSOpenPanel sandbox)
+        let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+
+        if !FileManager.default.fileExists(atPath: destPath) {
+            try FileManager.default.copyItem(atPath: sourcePath, toPath: destPath)
+        }
 
         var mutableProject = project
         mutableProject.sourceFilePath = destPath
@@ -158,51 +171,99 @@ class ProjectManager: ObservableObject {
     }
 
     private func checkFFmpeg() async -> Bool {
+        let candidates = [
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg"
+        ]
+        for path in candidates {
+            if FileManager.default.fileExists(atPath: path) {
+                return true
+            }
+        }
+        // Dernier recours : via which
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = ["ffmpeg"]
-
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["which", "ffmpeg"]
         let pipe = Pipe()
         process.standardOutput = pipe
-
         try? process.run()
         process.waitUntilExit()
-
         return process.terminationStatus == 0
     }
 
+
     private func checkOllama() async -> (running: Bool, modelAvailable: Bool) {
-        guard let url = URL(string: "http://localhost:11434/api/tags") else {
-            return (false, false)
+        logger.debug("Checking Ollama availability...")
+        
+        // D'abord, vérifier si l'API HTTP répond
+        var apiRunning = false
+        var hasQwenViaAPI = false
+        
+        if let url = URL(string: "http://localhost:11434/api/tags") {
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let httpResponse = response as? HTTPURLResponse,
+                   httpResponse.statusCode == 200 {
+                    apiRunning = true
+                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let models = json["models"] as? [[String: Any]] {
+                        hasQwenViaAPI = models.contains { 
+                            if let name = $0["name"] as? String {
+                                return name.hasPrefix("qwen2.5") || name.hasPrefix("qwen3")
+                            }
+                            return false
+                        }
+                    }
+                }
+            } catch {
+                logger.debug("Ollama API not accessible, trying CLI...")
+            }
         }
 
-        do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                return (false, false)
-            }
-
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            if let models = json?["models"] as? [[String: Any]] {
-                let hasQwen = models.contains { ($0["name"] as? String)?.hasPrefix("qwen3") ?? false }
+        // Fallback CLI : ollama list (marche même si l'API est boguée dans les vieilles versions)
+        if !hasQwenViaAPI {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: pathResolver.ollamaPath)
+            process.arguments = ["list"]
+            
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            
+            try? process.run()
+            process.waitUntilExit()
+            
+            if process.terminationStatus == 0 {
+                let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: outputData, encoding: .utf8) ?? ""
+                let hasQwen = output.contains("qwen2.5") || output.contains("qwen3")
+                logger.info("Ollama check via CLI: running=true, qwen3=\(hasQwen)")
                 return (true, hasQwen)
             }
-            return (true, false)
-        } catch {
-            return (false, false)
         }
+        
+        logger.info("Ollama check: running=\(apiRunning), qwen3=\(hasQwenViaAPI)")
+        return (apiRunning, hasQwenViaAPI)
     }
 
     private func checkFishModel() async -> Bool {
-        // Chercher le modèle dans le dossier backend/models/
-        let bundlePath = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .path
-        let modelPath = "\(bundlePath)/backend/models/fishaudio-s2-pro-8bit-mlx"
-        return FileManager.default.fileExists(atPath: modelPath)
+        logger.debug("Checking Fish S2 Pro model (mlx-speech)...")
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pathResolver.pythonPath)
+        process.arguments = ["-c", "import mlx_speech; print('OK')"]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        
+        try? process.run()
+        process.waitUntilExit()
+        
+        let available = process.terminationStatus == 0
+        logger.info("Fish S2 Pro model check: \(available ? "available" : "not available")")
+        return available
     }
 
     // MARK: - Save/Load Chapter Text

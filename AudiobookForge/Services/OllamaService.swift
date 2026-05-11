@@ -30,7 +30,13 @@ class OllamaService {
 
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             if let models = json?["models"] as? [[String: Any]] {
-                return models.contains { ($0["name"] as? String)?.hasPrefix("qwen3") ?? false }
+                // Chercher qwen2.5 ou qwen3
+                return models.contains { 
+                    if let name = $0["name"] as? String {
+                        return name.hasPrefix("qwen2.5") || name.hasPrefix("qwen3")
+                    }
+                    return false
+                }
             }
             return false
         } catch {
@@ -73,7 +79,7 @@ class OllamaService {
         """
 
         let body: [String: Any] = [
-            "model": "qwen3:30b",
+            "model": "qwen2.5:7b",  // Utiliser le modèle installé
             "prompt": prompt,
             "temperature": 0.3,
             "top_p": 0.9,

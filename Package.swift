@@ -14,7 +14,8 @@ let package = Package(
         .executableTarget(
             name: "AudiobookForge",
             dependencies: [],
-            path: "AudiobookForge"
+            path: "AudiobookForge",
+            exclude: ["Info.plist", "AppIcon.png"]
         )
     ]
 )

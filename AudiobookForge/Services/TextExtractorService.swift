@@ -5,17 +5,11 @@ import Foundation
 class TextExtractorService {
     static let shared = TextExtractorService()
 
-    /// Chemin absolu vers le dossier backend/scripts
-    private let backendScriptsPath: String
+    private let pathResolver = PathResolver.shared
+    private let logger = Logger.shared
 
     private init() {
-        // On remonte depuis le bundle jusqu'à trouver le dossier backend
-        let bundlePath = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .path
-        backendScriptsPath = "\(bundlePath)/backend/scripts"
+        logger.info("TextExtractorService initialized")
     }
 
     /// Extrait le texte d'un fichier source
@@ -24,7 +18,11 @@ class TextExtractorService {
         metadata: (title: String, author: String),
         coverPath: String?
     ) {
+        let startTime = Date()
+        logger.beginOperation("Extract text from \(type.rawValue)")
+        
         let scriptPath: String
+        let backendScriptsPath = pathResolver.backendScriptsPath
 
         switch type {
         case .epub:
@@ -41,11 +39,19 @@ class TextExtractorService {
 
         try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
 
+        let pythonPath = pathResolver.pythonPath
+        
+        // Log des chemins pour debugging
+        logger.debug("Python path: \(pythonPath)")
+        logger.debug("Script path: \(scriptPath)")
+        logger.debug("Input file: \(filePath)")
+        logger.debug("Output dir: \(outputDir)")
+
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 do {
                     let process = Process()
-                    process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+                    process.executableURL = URL(fileURLWithPath: pythonPath)
                     process.arguments = [
                         scriptPath,
                         "--input", filePath,
@@ -56,14 +62,29 @@ class TextExtractorService {
                     let errorPipe = Pipe()
                     process.standardOutput = outputPipe
                     process.standardError = errorPipe
+                    
+                    self.logger.debug("Starting extraction process...")
 
                     try process.run()
                     process.waitUntilExit()
+                    
+                    // Lire TOUJOURS les sorties (même en cas de succès)
+                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    
+                    let outputMessage = String(data: outputData, encoding: .utf8) ?? ""
+                    let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
+                    
+                    if !outputMessage.isEmpty {
+                        self.logger.debug("Python stdout: \(outputMessage)")
+                    }
+                    if !errorMessage.isEmpty {
+                        self.logger.debug("Python stderr: \(errorMessage)")
+                    }
 
                     if process.terminationStatus != 0 {
-                        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                        let errorMessage = String(data: errorData, encoding: .utf8) ?? "Erreur inconnue"
-                        throw TextExtractorError.extractionFailed(errorMessage)
+                        self.logger.error("Extraction failed with code \(process.terminationStatus): \(errorMessage)")
+                        throw TextExtractorError.extractionFailed(errorMessage.isEmpty ? "Unknown error (code \(process.terminationStatus))" : errorMessage)
                     }
 
                     // Lire les fichiers générés par le script Python
@@ -83,8 +104,13 @@ class TextExtractorService {
                     // Nettoyer le dossier temporaire
                     try? FileManager.default.removeItem(atPath: outputDir)
 
+                    let duration = Date().timeIntervalSince(startTime)
+                    self.logger.endOperation("Extract text from \(type.rawValue)", duration: duration)
+                    self.logger.info("Extracted \(resultChapters.count) chapters")
+
                     continuation.resume(returning: (resultChapters, (metadata.title, metadata.author), coverPath))
                 } catch {
+                    self.logger.failedOperation("Extract text from \(type.rawValue)", error: error)
                     continuation.resume(throwing: error)
                 }
             }
@@ -168,6 +194,7 @@ class TextExtractorService {
 
         return cleaned
     }
+
 }
 
 // MARK: - Supporting Types

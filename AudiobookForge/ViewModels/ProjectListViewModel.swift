@@ -18,6 +18,8 @@ class ProjectListViewModel: ObservableObject {
         projects = projectManager.projects
     }
 
+    @Published var lastImportedProject: Project?
+
     func importFile(url: URL) {
         isImporting = true
         importError = nil
@@ -45,8 +47,10 @@ class ProjectListViewModel: ObservableObject {
                 fileType: fileType
             )
             projects.append(project)
+            lastImportedProject = project
             isImporting = false
         } catch {
+            print("❌ IMPORT ERROR: \(error)")
             importError = "Erreur lors de l'import : \(error.localizedDescription)"
             isImporting = false
         }

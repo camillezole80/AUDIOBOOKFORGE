@@ -46,13 +46,18 @@ struct ImportFileView: View {
                             UTType(filenameExtension: "docx") ?? .data
                         ]
                         panel.allowsMultipleSelection = false
+                        panel.canChooseFiles = true
+                        panel.canChooseDirectories = false
 
                         if panel.runModal() == .OK, let url = panel.url {
                             projectListVM.importFile(url: url)
-                            dismiss()
+                            if projectListVM.importError == nil {
+                                dismiss()
+                            }
                         }
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(projectListVM.isImporting)
                 }
             }
             .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in

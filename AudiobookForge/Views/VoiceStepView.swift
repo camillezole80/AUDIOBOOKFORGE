@@ -6,19 +6,42 @@ struct VoiceStepView: View {
     @EnvironmentObject private var pipelineVM: PipelineViewModel
     @State private var showAudioPicker = false
     @State private var previewReady = false
+    @State private var showAudioSettings = false
 
     var body: some View {
         VStack(spacing: 24) {
             // En-tête
-            VStack(spacing: 8) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 40))
-                    .foregroundColor(.accentColor)
-                Text("Configuration de la voix")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Importez un sample vocal de référence (10-30 secondes)")
-                    .foregroundColor(.secondary)
+            HStack(alignment: .top) {
+                VStack(spacing: 8) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 40))
+                        .foregroundColor(.accentColor)
+                    Text("Configuration de la voix")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Importez un sample vocal de référence (10-30 secondes)")
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                // Bouton de configuration audio
+                VStack(spacing: 4) {
+                    Button(action: { showAudioSettings = true }) {
+                        Image(systemName: "speaker.wave.2.circle.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.green)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Configurer la génération audio (Local / Fish.Audio API)")
+                    
+                    Text("Génération distante")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("par API")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
 
             // Import du sample vocal
@@ -103,7 +126,7 @@ struct VoiceStepView: View {
                     .background(Color(NSColor.controlBackgroundColor))
                     .cornerRadius(8)
 
-                    // Preview
+                    // Preview et Navigation
                     VStack(spacing: 12) {
                         Button(action: {
                             Task { await pipelineVM.generateVoicePreview() }
@@ -124,6 +147,22 @@ struct VoiceStepView: View {
                                 Text("Preview généré")
                             }
                         }
+                        
+                        Divider()
+                            .padding(.vertical, 8)
+                        
+                        // Bouton pour passer à l'étape suivante
+                        Button(action: {
+                            pipelineVM.currentStep = .generation
+                        }) {
+                            HStack {
+                                Text("Passer à la génération")
+                                Image(systemName: "arrow.right")
+                            }
+                            .frame(maxWidth: 250)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!project.voiceConfig.hasValidReference)
                     }
                 }
                 .frame(maxWidth: 500)
@@ -145,6 +184,14 @@ struct VoiceStepView: View {
                 }
             case .failure:
                 break
+            }
+        }
+        .sheet(isPresented: $showAudioSettings) {
+            if let project = pipelineVM.project {
+                AudioSettingsView(voiceConfig: Binding(
+                    get: { project.voiceConfig },
+                    set: { pipelineVM.updateVoiceConfig($0) }
+                ))
             }
         }
     }

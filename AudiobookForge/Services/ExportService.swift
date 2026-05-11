@@ -3,6 +3,9 @@ import Foundation
 /// Service d'export des fichiers audio finaux
 class ExportService {
     static let shared = ExportService()
+    
+    private let pathResolver = PathResolver.shared
+    private let logger = Logger.shared
 
     /// Exporte un projet dans le format choisi
     func exportProject(
@@ -93,7 +96,7 @@ class ExportService {
         let concatPath = "\(exportDir)/concat_list.txt"
         var concatContent = ""
 
-        for (index, chapter) in project.chapters.enumerated() {
+        for chapter in project.chapters {
             guard let audioPath = chapter.audioFilePath,
                   FileManager.default.fileExists(atPath: audioPath) else { continue }
             concatContent += "file '\(audioPath)'\n"
@@ -109,7 +112,7 @@ class ExportService {
 
         // Calculer les timestamps pour chaque chapitre
         var currentTimestamp: Int64 = 0
-        for (index, chapter) in project.chapters.enumerated() {
+        for chapter in project.chapters {
             guard let audioPath = chapter.audioFilePath,
                   FileManager.default.fileExists(atPath: audioPath) else { continue }
 
@@ -130,7 +133,7 @@ class ExportService {
 
         // Concaténer et appliquer les métadonnées
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ffmpeg")
+        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
 
         // Paramètres de codec selon le format choisi
         var codecArgs: [String]
@@ -187,8 +190,10 @@ class ExportService {
         chapterIndex: Int,
         coverPath: String?
     ) async throws {
+        logger.debug("Converting audio: \(inputPath) -> \(outputPath)")
+        
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ffmpeg")
+        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
 
         var arguments: [String] = [
             "-i", inputPath,
@@ -237,7 +242,7 @@ class ExportService {
     /// Obtient la durée d'un fichier audio via ffprobe
     private func getAudioDuration(filePath: String) async throws -> TimeInterval {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ffprobe")
+        process.executableURL = URL(fileURLWithPath: pathResolver.ffprobePath)
         process.arguments = [
             "-v", "error",
             "-show_entries", "format=duration",

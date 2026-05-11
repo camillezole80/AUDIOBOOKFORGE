@@ -17,6 +17,7 @@ struct Project: Identifiable, Codable, Hashable {
     var chapters: [Chapter]
     var voiceConfig: VoiceConfig
     var exportConfig: ExportConfig
+    var aiConfig: AIConfig = AIConfig()
     var createdAt: Date
     var updatedAt: Date
     var status: ProjectStatus
@@ -101,9 +102,20 @@ struct VoiceConfig: Codable {
     var speedScale: Double = 1.0
     var temperature: Double = 0.8
     var voices: [VoiceProfile] = []
+    
+    // Configuration pour Fish.Audio API
+    var preferredProvider: AudioProvider = .local
+    var forceRemote: Bool = false
+    var fallbackToRemote: Bool = true
+    var fishAudioReferenceId: String? = nil  // ID de la voix sauvegardée sur Fish.Audio
 
     var hasValidReference: Bool {
-        !referenceAudioPath.isEmpty && !referenceTranscription.isEmpty
+        // Si Fish.Audio est configuré, pas besoin de référence locale
+        if preferredProvider == .fishAudio {
+            return true
+        }
+        // Sinon, vérifier la référence locale
+        return !referenceAudioPath.isEmpty && !referenceTranscription.isEmpty
     }
 }
 
@@ -146,4 +158,67 @@ enum ChunkStatus: String, Codable {
     case pending = "pending"
     case done = "done"
     case error = "error"
+}
+
+// MARK: - AI Configuration
+
+struct AIConfig: Codable {
+    var preferredProvider: AIProvider = .ollama
+    var forceRemote: Bool = false
+    var fallbackToRemote: Bool = true
+    var showCostEstimate: Bool = true
+    
+    // Modèles personnalisables
+    var openaiModel: String = "gpt-4o-mini"
+    var anthropicModel: String = "claude-3-5-sonnet-20241022"
+    var deepseekModel: String = "deepseek-chat"
+    
+    // Note: Les clés API sont stockées dans le Keychain, pas ici
+}
+
+enum AIProvider: String, Codable, CaseIterable {
+    case ollama = "Ollama (Local)"
+    case openai = "OpenAI"
+    case anthropic = "Anthropic"
+    case deepseek = "DeepSeek"
+    
+    var displayName: String { rawValue }
+    
+    var requiresAPIKey: Bool {
+        self != .ollama
+    }
+    
+    var costPer1KTokens: Double {
+        switch self {
+        case .ollama: return 0.0
+        case .openai: return 0.01  // GPT-4o-mini
+        case .anthropic: return 0.015  // Claude 3.5 Sonnet
+        case .deepseek: return 0.001  // DeepSeek V3
+        }
+    }
+}
+
+// MARK: - Audio Configuration
+
+enum AudioProvider: String, Codable, CaseIterable {
+    case local = "Local (MLX)"
+    case fishAudio = "Fish.Audio API"
+    
+    var displayName: String {
+        switch self {
+        case .local: return "Local (MLX - Gratuit)"
+        case .fishAudio: return "Fish.Audio API"
+        }
+    }
+    
+    var requiresAPIKey: Bool {
+        self == .fishAudio
+    }
+    
+    var costPer1MBytes: Double {
+        switch self {
+        case .local: return 0.0
+        case .fishAudio: return 15.0  // $15 per 1M bytes UTF-8
+        }
+    }
 }

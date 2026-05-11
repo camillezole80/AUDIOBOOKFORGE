@@ -36,10 +36,10 @@ struct DependencyCheckView: View {
                     )
 
                     DependencyRow(
-                        name: "Qwen3 30B",
+                        name: "Qwen 2.5 (7B ou plus)",
                         description: "Modèle LLM pour balises",
                         isInstalled: status.qwenModelAvailable,
-                        installCommand: "ollama pull qwen3:30b"
+                        installCommand: "ollama pull qwen2.5:7b"
                     )
 
                     DependencyRow(
@@ -69,6 +69,12 @@ struct DependencyCheckView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                
+                Button("Ouvrir les logs") {
+                    let logPath = Logger.shared.logFileURL.path
+                    NSWorkspace.shared.selectFile(logPath, inFileViewerRootedAtPath: "")
+                }
+                .buttonStyle(.bordered)
 
                 Button("Fermer") {
                     dismiss()

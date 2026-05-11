@@ -1,19 +1,16 @@
 import Foundation
 
-/// Service de génération audio via mlx-speech (Fish Audio S2 Pro)
+/// Service de génération audio via mlx-speech (Fish Audio S2 Pro) ou Fish.Audio API
 class AudioGenerationService {
     static let shared = AudioGenerationService()
 
-    /// Chemin absolu vers le dossier backend/scripts
-    private let backendScriptsPath: String
+    private let pathResolver = PathResolver.shared
+    private let logger = Logger.shared
+    private let remoteAudioService = RemoteAudioService.shared
+    private let keychain = KeychainHelper.shared
 
     private init() {
-        let bundlePath = Bundle.main.bundleURL
-            .deletingLastPathComponent() // .build/
-            .deletingLastPathComponent() // AudiobookForge/
-            .deletingLastPathComponent() // racine du projet
-            .path
-        backendScriptsPath = "\(bundlePath)/backend/scripts"
+        logger.info("AudioGenerationService initialized")
     }
 
     /// Découpe le texte en chunks de maximum 200 mots
@@ -60,7 +57,7 @@ class AudioGenerationService {
         return chunks
     }
 
-    /// Génère l'audio pour un chunk via mlx-speech
+    /// Génère l'audio pour un chunk (local MLX ou Fish.Audio API)
     func generateChunkAudio(
         text: String,
         referenceAudio: String,
@@ -69,14 +66,99 @@ class AudioGenerationService {
         chunkIndex: Int,
         voiceConfig: VoiceConfig
     ) async throws {
-        let scriptPath = "\(backendScriptsPath)/generate/fish_s2_pro.py"
+        logger.debug("Generating chunk \(chunkIndex): \(text.prefix(50))...")
+        
+        // Déterminer le provider à utiliser
+        let provider = voiceConfig.preferredProvider
+        let useRemote = voiceConfig.forceRemote || (provider == .fishAudio)
+        
+        if useRemote && provider.requiresAPIKey {
+            // Utiliser Fish.Audio API
+            try await generateChunkViaFishAudio(
+                text: text,
+                referenceAudio: referenceAudio,
+                referenceText: referenceText,
+                outputPath: outputPath,
+                chunkIndex: chunkIndex,
+                voiceConfig: voiceConfig
+            )
+        } else {
+            // Utiliser MLX local (code original)
+            try await generateChunkViaMLX(
+                text: text,
+                referenceAudio: referenceAudio,
+                referenceText: referenceText,
+                outputPath: outputPath,
+                chunkIndex: chunkIndex,
+                voiceConfig: voiceConfig
+            )
+        }
+    }
+    
+    /// Génère l'audio via Fish.Audio API
+    private func generateChunkViaFishAudio(
+        text: String,
+        referenceAudio: String,
+        referenceText: String,
+        outputPath: String,
+        chunkIndex: Int,
+        voiceConfig: VoiceConfig
+    ) async throws {
+        logger.info("Generating chunk \(chunkIndex) via Fish.Audio API...")
+        
+        guard let apiKey = keychain.get(for: .fishAudio) else {
+            throw AudioGenerationError.missingAPIKey
+        }
+        
+        // Charger l'audio de référence
+        let referenceData: Data?
+        let refId = voiceConfig.fishAudioReferenceId
+        
+        if refId == nil {
+            // Zero-shot : charger l'audio de référence
+            referenceData = try Data(contentsOf: URL(fileURLWithPath: referenceAudio))
+        } else {
+            // Utiliser le reference_id sauvegardé
+            referenceData = nil
+        }
+        
+        // Appeler l'API
+        let audioData = try await remoteAudioService.generateAudio(
+            text: text,
+            referenceAudio: referenceData,
+            referenceText: referenceData != nil ? referenceText : nil,
+            referenceId: refId,
+            apiKey: apiKey,
+            voiceConfig: voiceConfig
+        )
+        
+        // Sauvegarder le WAV
+        try audioData.write(to: URL(fileURLWithPath: outputPath))
+        
+        logger.info("Chunk \(chunkIndex) generated successfully via Fish.Audio API")
+    }
+    
+    /// Génère l'audio via MLX local (code original)
+    private func generateChunkViaMLX(
+        text: String,
+        referenceAudio: String,
+        referenceText: String,
+        outputPath: String,
+        chunkIndex: Int,
+        voiceConfig: VoiceConfig
+    ) async throws {
+        logger.info("Generating chunk \(chunkIndex) via MLX local...")
+        
+        let scriptPath = "\(pathResolver.backendScriptsPath)/generate/fish_s2_pro.py"
+        let pythonPath = pathResolver.pythonPath
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+
+        // Utiliser le repo HuggingFace par défaut au lieu d'un chemin local
         process.arguments = [
             scriptPath,
             "--text", text,
-            "--model-dir", "models/fishaudio-s2-pro-8bit-mlx",
             "--reference-audio", referenceAudio,
             "--reference-text", referenceText,
             "--output", outputPath,
@@ -102,6 +184,8 @@ class AudioGenerationService {
             let errorMessage = String(data: errorData, encoding: .utf8) ?? "Erreur inconnue"
             throw AudioGenerationError.chunkGenerationFailed(chunkIndex, errorMessage)
         }
+        
+        logger.info("Chunk \(chunkIndex) generated successfully via MLX local")
     }
 
     /// Génère tous les chunks d'un chapitre
@@ -180,7 +264,7 @@ class AudioGenerationService {
         try listContent.write(toFile: listPath, atomically: true, encoding: .utf8)
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ffmpeg")
+        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
         process.arguments = [
             "-f", "concat",
             "-safe", "0",
@@ -198,8 +282,10 @@ class AudioGenerationService {
 
     /// Normalise le volume d'un fichier audio à -1 dBFS
     func normalizeAudio(filePath: String) async throws {
+        logger.debug("Normalizing audio: \(filePath)")
+        
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ffmpeg")
+        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
         process.arguments = [
             "-i", filePath,
             "-af", "loudnorm=I=-1:LRA=11:TP=-1",
@@ -244,6 +330,7 @@ enum AudioGenerationError: Error, LocalizedError {
     case noValidChunks
     case ffmpegNotFound
     case normalizationFailed(String)
+    case missingAPIKey
 
     var errorDescription: String? {
         switch self {
@@ -255,6 +342,8 @@ enum AudioGenerationError: Error, LocalizedError {
             return "ffmpeg n'est pas installé. Installez-le avec : brew install ffmpeg"
         case .normalizationFailed(let message):
             return "Échec de la normalisation : \(message)"
+        case .missingAPIKey:
+            return "Clé API Fish.Audio manquante"
         }
     }
 }

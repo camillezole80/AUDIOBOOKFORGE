@@ -54,19 +54,41 @@ struct GenerationStepView: View {
                 }
 
                 // Boutons de contrôle
-                HStack(spacing: 16) {
+                VStack(spacing: 12) {
                     if !pipelineVM.isProcessing {
-                        Button(action: {
-                            Task { await pipelineVM.generateAudio() }
-                        }) {
-                            HStack {
-                                Image(systemName: "play.fill")
-                                Text("Générer l'audio")
+                        HStack(spacing: 16) {
+                            // Bouton pour générer tous les chapitres
+                            Button(action: {
+                                Task { await pipelineVM.generateAudio() }
+                            }) {
+                                HStack {
+                                    Image(systemName: "play.fill")
+                                    Text("Générer tous les chapitres")
+                                }
+                                .frame(maxWidth: 250)
                             }
-                            .frame(maxWidth: 200)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!project.voiceConfig.hasValidReference)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!project.voiceConfig.hasValidReference)
+                        
+                        // Info sur le provider audio
+                        if project.voiceConfig.preferredProvider == .fishAudio {
+                            HStack {
+                                Image(systemName: "info.circle")
+                                    .foregroundColor(.blue)
+                                Text("Génération via Fish.Audio API")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        } else {
+                            HStack {
+                                Image(systemName: "info.circle")
+                                    .foregroundColor(.green)
+                                Text("Génération locale via MLX")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                     } else {
                         Button(action: { pipelineVM.togglePause() }) {
                             HStack {
@@ -100,6 +122,7 @@ struct GenerationStepView: View {
 struct ChapterProgressRow: View {
     let index: Int
     let chapter: Chapter
+    @EnvironmentObject private var pipelineVM: PipelineViewModel
 
     var body: some View {
         HStack {
@@ -115,6 +138,21 @@ struct ChapterProgressRow: View {
             Spacer()
 
             StatusBadge(status: chapter.status)
+            
+            // Bouton pour générer ce chapitre individuellement
+            if chapter.status == .tagged && chapter.audioFilePath == nil {
+                Button(action: {
+                    Task {
+                        await pipelineVM.generateSingleChapter(at: index)
+                    }
+                }) {
+                    Image(systemName: "play.circle")
+                        .foregroundColor(.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .help("Générer ce chapitre")
+                .disabled(pipelineVM.isProcessing)
+            }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)

@@ -77,13 +77,20 @@ struct FormatRow: View {
 }
 
 struct TagsSettings: View {
+    @EnvironmentObject private var pipelineVM: PipelineViewModel
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Modèle", systemImage: "brain")
                 .font(.headline)
 
-            Text("Qwen3 30B via Ollama")
-                .font(.callout)
+            if let project = pipelineVM.project {
+                Text(project.aiConfig.preferredProvider.displayName)
+                    .font(.callout)
+            } else {
+                Text("Non configuré")
+                    .font(.callout)
+            }
 
             Text("Temperature: 0.3")
                 .font(.caption)

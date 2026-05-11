@@ -26,9 +26,12 @@ struct ProjectListView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button(action: { projectListVM.showImportSheet = true }) {
-                    Image(systemName: "plus")
+                    Label("Nouveau projet", systemImage: "plus.circle.fill")
+                        .font(.title2)
+                        .labelStyle(.iconOnly)
                 }
-                .help("Nouveau projet")
+                .buttonStyle(.borderless)
+                .help("Nouveau projet (⌘N)")
             }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in

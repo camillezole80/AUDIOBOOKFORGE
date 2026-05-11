@@ -1,0 +1,55 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+.build/
+.swiftpm/
+xcuserdata/
+*.xcworkspace
+!default.xcworkspace
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcworkspace/contents.xcworkspacedata
+/*.gcno
+**/xcshareddata/WorkspaceSettings.xcsettings
+
+# Swift Package Manager
+.swiftpm/
+Packages/
+Package.resolved
+.build/
+
+# VSCode
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Data directories
+data/
+outputs/
+ebooks/
+models/
+
+# Logs
+*.log
+
+# Environment
+.env
+.xcode.env
+
+# Docker
+docker-compose.override.yml

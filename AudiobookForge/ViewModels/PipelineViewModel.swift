@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UserNotifications
 
 /// ViewModel principal du pipeline de traitement
 @MainActor
@@ -34,9 +35,13 @@ class PipelineViewModel: ObservableObject {
 
     private let textExtractor = TextExtractorService.shared
     private let ollamaService = OllamaService.shared
+    private let remoteAIService = RemoteAIService.shared
+    private let keychain = KeychainHelper.shared
     private let audioService = AudioGenerationService.shared
     private let exportService = ExportService.shared
     private let projectManager = ProjectManager.shared
+    private let diskChecker = DiskSpaceChecker()
+    private let chunkCleaner = ChunkCleaner()
 
     enum PipelineStep: Int, CaseIterable {
         case import_ = 0
@@ -146,32 +151,98 @@ class PipelineViewModel: ObservableObject {
     // MARK: - Étape 2: Injection de balises
 
     func injectTags() async {
-        guard let project = project, !project.chapters.isEmpty else { return }
+        guard var project = project, !project.chapters.isEmpty else { return }
         isProcessing = true
         isPaused = false
         errorMessage = nil
 
         do {
-            let updatedChapters = try await ollamaService.processAllChapters(
-                chapters: project.chapters,
-                progressHandler: { [weak self] current, total in
-                    self?.progress = Double(current) / Double(total)
-                    self?.progressText = "Chapitre \(current)/\(total) enrichi..."
+            // Choisir le service selon la configuration
+            let aiConfig = project.aiConfig
+            let useRemote = aiConfig.forceRemote || (aiConfig.preferredProvider != .ollama)
+            
+            // DEBUG
+            print("🔍 DEBUG injectTags:")
+            print("  - preferredProvider: \(aiConfig.preferredProvider.rawValue)")
+            print("  - forceRemote: \(aiConfig.forceRemote)")
+            print("  - useRemote: \(useRemote)")
+            print("  - requiresAPIKey: \(aiConfig.preferredProvider.requiresAPIKey)")
+            
+            // Traiter chaque chapitre avec sauvegarde incrémentielle
+            for (index, chapter) in project.chapters.enumerated() {
+                // Vérifier si déjà balisé (reprise après timeout)
+                if chapter.status == .tagged && chapter.taggedText != nil {
+                    progress = Double(index + 1) / Double(project.chapters.count)
+                    progressText = "Chapitre \(index + 1)/\(project.chapters.count) déjà enrichi (reprise)..."
+                    continue
                 }
-            )
-
-            var updatedProject = project
-            updatedProject.chapters = updatedChapters
-            updatedProject.status = .tagsInjected
-
-            // Sauvegarder les textes enrichis
-            for chapter in updatedChapters {
-                try? projectManager.saveChapterText(project: updatedProject, chapter: chapter)
+                
+                guard !chapter.rawText.isEmpty else { continue }
+                guard !isPaused else { break }
+                
+                do {
+                    let taggedText: String
+                    
+                    if useRemote && aiConfig.preferredProvider.requiresAPIKey {
+                        // Utiliser l'API distante
+                        guard let apiKey = keychain.get(for: aiConfig.preferredProvider) else {
+                            throw RemoteAIError.missingAPIKey
+                        }
+                        
+                        progressText = "Enrichissement chapitre \(index + 1)/\(project.chapters.count) via \(aiConfig.preferredProvider.displayName)..."
+                        
+                        taggedText = try await remoteAIService.injectTags(
+                            text: chapter.rawText,
+                            provider: aiConfig.preferredProvider,
+                            apiKey: apiKey
+                        )
+                    } else {
+                        // Utiliser Ollama local
+                        progressText = "Enrichissement chapitre \(index + 1)/\(project.chapters.count) via Ollama..."
+                        
+                        taggedText = try await ollamaService.injectTags(
+                            chapterText: chapter.rawText
+                        )
+                    }
+                    
+                    // Sauvegarder immédiatement ce chapitre
+                    project.chapters[index].taggedText = taggedText
+                    project.chapters[index].status = .tagged
+                    
+                    // Sauvegarde incrémentielle
+                    try? projectManager.saveChapterText(project: project, chapter: project.chapters[index])
+                    projectManager.updateProject(project)
+                    self.project = project
+                    
+                    progress = Double(index + 1) / Double(project.chapters.count)
+                    progressText = "Chapitre \(index + 1)/\(project.chapters.count) enrichi ✓"
+                    
+                } catch {
+                    // En cas d'erreur sur un chapitre, marquer comme erreur mais continuer
+                    project.chapters[index].status = .error
+                    projectManager.updateProject(project)
+                    self.project = project
+                    
+                    print("⚠️ Erreur chapitre \(index + 1): \(error.localizedDescription)")
+                    progressText = "Erreur chapitre \(index + 1), passage au suivant..."
+                    
+                    // Attendre un peu avant de continuer
+                    try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 secondes
+                }
             }
 
-            projectManager.updateProject(updatedProject)
-            self.project = updatedProject
-            currentStep = .voice
+            // Vérifier si tous les chapitres sont balisés
+            let allTagged = project.chapters.allSatisfy { $0.status == .tagged }
+            if allTagged {
+                project.status = .tagsInjected
+                projectManager.updateProject(project)
+                self.project = project
+                currentStep = .voice
+                progressText = "Enrichissement terminé ! ✓"
+            } else {
+                let taggedCount = project.chapters.filter { $0.status == .tagged }.count
+                progressText = "Enrichissement partiel : \(taggedCount)/\(project.chapters.count) chapitres"
+            }
 
         } catch {
             errorMessage = error.localizedDescription
@@ -189,9 +260,26 @@ class PipelineViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            let taggedText = try await ollamaService.injectTags(
-                chapterText: project.chapters[index].rawText
-            )
+            let aiConfig = project.aiConfig
+            let useRemote = aiConfig.forceRemote || (aiConfig.preferredProvider != .ollama)
+            
+            let taggedText: String
+            
+            if useRemote && aiConfig.preferredProvider.requiresAPIKey {
+                guard let apiKey = keychain.get(for: aiConfig.preferredProvider) else {
+                    throw RemoteAIError.missingAPIKey
+                }
+                
+                taggedText = try await remoteAIService.injectTags(
+                    text: project.chapters[index].rawText,
+                    provider: aiConfig.preferredProvider,
+                    apiKey: apiKey
+                )
+            } else {
+                taggedText = try await ollamaService.injectTags(
+                    chapterText: project.chapters[index].rawText
+                )
+            }
 
             project.chapters[index].taggedText = taggedText
             project.chapters[index].status = .tagged
@@ -242,6 +330,19 @@ class PipelineViewModel: ObservableObject {
         projectManager.updateProject(project)
         self.project = project
     }
+    
+    func updateVoiceConfig(_ config: VoiceConfig) {
+        guard var project = project else { return }
+        project.voiceConfig = config
+        projectManager.updateProject(project)
+        self.project = project
+        
+        // DEBUG
+        print("🔧 VoiceConfig mis à jour dans le projet:")
+        print("  - preferredProvider: \(config.preferredProvider.rawValue)")
+        print("  - forceRemote: \(config.forceRemote)")
+        print("  - hasValidReference: \(config.hasValidReference)")
+    }
 
     func generateVoicePreview() async {
         guard let project = project,
@@ -279,16 +380,37 @@ class PipelineViewModel: ObservableObject {
         isPaused = false
         errorMessage = nil
 
+        // Vérifier l'espace disque avant de commencer
+        do {
+            try diskChecker.checkBeforeAudioGeneration(project: project)
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
+            isProcessing = false
+            return
+        }
+
         var updatedProject = project
 
         for (chapterIndex, chapter) in updatedProject.chapters.enumerated() {
             guard !isPaused else { break }
+            
+            // Ignorer les chapitres non balisés ou déjà générés
+            if chapter.status != .tagged {
+                progressText = "Chapitre \(chapterIndex + 1) ignoré (non balisé)"
+                continue
+            }
+            
+            if chapter.status == .audioReady && chapter.audioFilePath != nil {
+                progressText = "Chapitre \(chapterIndex + 1) déjà généré (reprise)"
+                continue
+            }
 
             progressText = "Génération du chapitre \(chapterIndex + 1)/\(updatedProject.chapters.count)..."
             progress = Double(chapterIndex) / Double(updatedProject.chapters.count)
 
             do {
-                let (chunks, chapterAudioPath) = try await audioService.generateChapterAudio(
+                let (_, chapterAudioPath) = try await audioService.generateChapterAudio(
                     chapter: chapter,
                     projectDir: updatedProject.projectDirectory,
                     voiceConfig: updatedProject.voiceConfig,
@@ -302,6 +424,10 @@ class PipelineViewModel: ObservableObject {
 
                 updatedProject.chapters[chapterIndex].audioFilePath = chapterAudioPath
                 updatedProject.chapters[chapterIndex].status = .audioReady
+
+                // Nettoyer les chunks pour économiser l'espace disque
+                // (garde les chunks en mode debug si nécessaire)
+                chunkCleaner.cleanAllChunks(in: updatedProject.projectDirectory, keepChunks: false)
 
                 // Sauvegarder la progression
                 projectManager.updateProject(updatedProject)
@@ -332,6 +458,66 @@ class PipelineViewModel: ObservableObject {
     func togglePause() {
         isPaused.toggle()
     }
+    
+    func generateSingleChapter(at index: Int) async {
+        guard let project = project,
+              index < project.chapters.count,
+              project.voiceConfig.hasValidReference else { return }
+        
+        let chapter = project.chapters[index]
+        
+        // Vérifier que le chapitre est balisé
+        guard chapter.status == .tagged else {
+            errorMessage = "Le chapitre doit être balisé avant la génération"
+            showError = true
+            return
+        }
+        
+        isProcessing = true
+        errorMessage = nil
+        
+        var updatedProject = project
+        
+        progressText = "Génération du chapitre \(index + 1)..."
+        progress = 0
+        
+        do {
+            let (_, chapterAudioPath) = try await audioService.generateChapterAudio(
+                chapter: chapter,
+                projectDir: updatedProject.projectDirectory,
+                voiceConfig: updatedProject.voiceConfig,
+                progressHandler: { [weak self] current, total in
+                    self?.progress = Double(current) / Double(total)
+                    self?.progressText = "Chunk \(current)/\(total) du chapitre \(index + 1)"
+                }
+            )
+            
+            // Normaliser
+            try await audioService.normalizeAudio(filePath: chapterAudioPath)
+            
+            updatedProject.chapters[index].audioFilePath = chapterAudioPath
+            updatedProject.chapters[index].status = .audioReady
+            
+            // Nettoyer les chunks
+            chunkCleaner.cleanAllChunks(in: updatedProject.projectDirectory, keepChunks: false)
+            
+            // Sauvegarder
+            projectManager.updateProject(updatedProject)
+            self.project = updatedProject
+            
+            progress = 1.0
+            progressText = "Chapitre \(index + 1) généré ✓"
+            
+        } catch {
+            updatedProject.chapters[index].status = .error
+            errorMessage = "Erreur chapitre \(index + 1): \(error.localizedDescription)"
+            showError = true
+            projectManager.updateProject(updatedProject)
+            self.project = updatedProject
+        }
+        
+        isProcessing = false
+    }
 
     // MARK: - Étape 5: Export
 
@@ -361,11 +547,10 @@ class PipelineViewModel: ObservableObject {
 
             progressText = "Export terminé ! \(exportedFiles.count) fichier(s) créé(s)"
 
-            // Notification macOS
-            let notification = NSUserNotification()
-            notification.title = "AudiobookForge"
-            notification.informativeText = "Export terminé : \(exportedFiles.count) fichier(s)"
-            NSUserNotificationCenter.default.deliver(notification)
+            // Notification macOS (UserNotifications framework)
+            Task {
+                await sendNotification(title: "AudiobookForge", body: "Export terminé : \(exportedFiles.count) fichier(s)")
+            }
 
         } catch {
             errorMessage = error.localizedDescription
@@ -373,5 +558,33 @@ class PipelineViewModel: ObservableObject {
         }
 
         isProcessing = false
+    }
+    
+    // MARK: - Notifications
+    
+    private func sendNotification(title: String, body: String) async {
+        let center = UNUserNotificationCenter.current()
+        
+        // Demander la permission si nécessaire
+        do {
+            let granted = try await center.requestAuthorization(options: [.alert, .sound])
+            guard granted else { return }
+            
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            
+            let request = UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil // Notification immédiate
+            )
+            
+            try await center.add(request)
+        } catch {
+            // Ignorer les erreurs de notification (non critique)
+            print("Failed to send notification: \(error)")
+        }
     }
 }

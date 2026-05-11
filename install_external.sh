@@ -140,7 +140,6 @@ fi
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
-pip install httpx
 deactivate
 
 echo -e "${GREEN}✅ Dépendances installées${NC}"
@@ -155,41 +154,17 @@ echo -e "${YELLOW}📥 Téléchargement de Qwen3 30B (Ollama)...${NC}"
 echo -e "${YELLOW}   (cela peut prendre 15-30 minutes selon ta connexion)${NC}"
 ollama pull qwen3:30b
 
-# Modèle Fish S2 Pro
-echo -e "${YELLOW}📥 Téléchargement du modèle Fish S2 Pro...${NC}"
-FISH_MODEL_DIR="${INSTALL_DIR}/models/fishaudio-s2-pro-8bit-mlx"
-if [ ! -d "$FISH_MODEL_DIR" ] || [ -z "$(ls -A "$FISH_MODEL_DIR" 2>/dev/null)" ]; then
-    echo -e "${YELLOW}   Téléchargement depuis Hugging Face...${NC}"
-    echo -e "${YELLOW}   (cela peut prendre 5-10 minutes)${NC}"
-    mkdir -p "$FISH_MODEL_DIR"
-    
-    # Installer huggingface-hub si nécessaire
-    pip install -q huggingface-hub 2>/dev/null
-    
-    # Télécharger le modèle Fish Speech 1.5 MLX
-    python3 -c "
-from huggingface_hub import snapshot_download
-snapshot_download(
-    repo_id='fishaudio/fish-speech-1.5',
-    local_dir='${FISH_MODEL_DIR}',
-    local_dir_use_symlinks=False,
-    ignore_patterns=['*.pt', '*.bin'],
-)
-" 2>&1 || echo -e "${YELLOW}   ⚠️  Téléchargement automatique échoué. Télécharge manuellement depuis :${NC}"
-    
-    if [ -d "$FISH_MODEL_DIR" ] && [ "$(ls -A "$FISH_MODEL_DIR" 2>/dev/null)" ]; then
-        echo -e "${GREEN}  ✅ Modèle Fish S2 Pro téléchargé${NC}"
-    else
-        echo -e "${YELLOW}   https://huggingface.co/fishaudio/fish-speech-1.5${NC}"
-        echo -e "${YELLOW}   Place les fichiers dans : ${FISH_MODEL_DIR}${NC}"
-    fi
-else
-    echo -e "${GREEN}  ✅ Modèle Fish S2 Pro déjà présent${NC}"
-fi
-
-# Installer mlx-speech
-echo -e "${YELLOW}📦 Installation de mlx-speech...${NC}"
-pip install -q mlx-speech 2>/dev/null && echo -e "${GREEN}  ✅ mlx-speech installé${NC}" || echo -e "${YELLOW}  ⚠️  mlx-speech non installé (optionnel pour l'instant)${NC}"
+# Modèle Fish S2 Pro (mlx-speech)
+echo -e "${YELLOW}📥 Préparation du modèle Fish S2 Pro...${NC}"
+echo -e "${YELLOW}   (téléchargement automatique par mlx-speech au premier lancement)${NC}"
+echo -e "${YELLOW}   Modèle : appautomaton/fishaudio-s2-pro-8bit-mlx (~1.5 Go)${NC}"
+echo -e "${YELLOW}   Cache : ~/.cache/huggingface/hub/ ou ~/.mlx-speech/${NC}"
+echo ""
+echo -e "${YELLOW}   Pour pré-télécharger maintenant :${NC}"
+echo -e "${YELLOW}     source ${INSTALL_DIR}/backend/venv/bin/activate${NC}"
+echo -e "${YELLOW}     python3 -c \"from mlx_speech import tts; tts.load('appautomaton/fishaudio-s2-pro-8bit-mlx')\"${NC}"
+echo -e "${YELLOW}     deactivate${NC}"
+echo -e "${GREEN}  ✅ mlx-speech installé (dépendance incluse dans requirements.txt)${NC}"
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"

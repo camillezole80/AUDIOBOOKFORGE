@@ -14,8 +14,13 @@ struct TagsStepView: View {
                 Text("Balises émotionnelles")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Enrichissement du texte via Qwen3 Ollama")
-                    .foregroundColor(.secondary)
+                if let project = pipelineVM.project {
+                    Text("Enrichissement via \(project.aiConfig.preferredProvider.displayName)")
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Enrichissement du texte")
+                        .foregroundColor(.secondary)
+                }
             }
 
             // Sélecteur de chapitre
@@ -60,27 +65,54 @@ struct TagsStepView: View {
             // Bouton d'injection globale
             if let project = pipelineVM.project {
                 if project.status == .textExtracted || project.status == .tagsInjected {
-                    Button(action: {
-                        Task { await pipelineVM.injectTags() }
-                    }) {
-                        HStack {
-                            if pipelineVM.isProcessing {
-                                ProgressView()
-                                    .scaleEffect(0.8)
+                    VStack(spacing: 12) {
+                        Button(action: {
+                            Task { await pipelineVM.injectTags() }
+                        }) {
+                            HStack {
+                                if pipelineVM.isProcessing {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                }
+                                Text(pipelineVM.isProcessing ? "Enrichissement en cours..." : "Enrichir tous les chapitres")
                             }
-                            Text(pipelineVM.isProcessing ? "Enrichissement en cours..." : "Enrichir tous les chapitres")
+                            .frame(maxWidth: 250)
                         }
-                        .frame(maxWidth: 250)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(pipelineVM.isProcessing)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(pipelineVM.isProcessing)
 
-                    if pipelineVM.isProcessing {
-                        ProgressView(value: pipelineVM.progress) {
-                            Text("\(Int(pipelineVM.progress * 100))%")
-                                .font(.caption)
+                        if pipelineVM.isProcessing {
+                            ProgressView(value: pipelineVM.progress) {
+                                Text("\(Int(pipelineVM.progress * 100))%")
+                                    .font(.caption)
+                            }
+                            .frame(maxWidth: 300)
                         }
-                        .frame(maxWidth: 300)
+                        
+                        Divider()
+                            .padding(.vertical, 8)
+                        
+                        // Bouton pour passer à l'étape suivante (même si balisage partiel)
+                        let taggedCount = project.chapters.filter { $0.status == .tagged }.count
+                        if taggedCount > 0 {
+                            VStack(spacing: 8) {
+                                Text("\(taggedCount)/\(project.chapters.count) chapitre(s) enrichi(s)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                
+                                Button(action: {
+                                    pipelineVM.currentStep = .voice
+                                }) {
+                                    HStack {
+                                        Text("Passer à la configuration vocale")
+                                        Image(systemName: "arrow.right")
+                                    }
+                                    .frame(maxWidth: 250)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(pipelineVM.isProcessing)
+                            }
+                        }
                     }
                 }
             }
