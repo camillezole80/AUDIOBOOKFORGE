@@ -38,6 +38,15 @@ ENV/
 dist/
 build/
 
+# tts-audiobook-tool virtual environments
+external/tts-audiobook-tool/venv-*/
+external/tts-audiobook-tool/.git/
+external/tts-audiobook-tool/__pycache__/
+external/tts-audiobook-tool/*.pyc
+external/tts-audiobook-tool/project.json
+external/tts-audiobook-tool/tests/
+external/tts-audiobook-tool/testx/
+
 # Data directories
 data/
 outputs/
