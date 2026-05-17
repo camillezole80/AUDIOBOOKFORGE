@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AVFoundation
 
 /// Étape 3 : Configuration de la voix
 struct VoiceStepView: View {
@@ -7,6 +8,8 @@ struct VoiceStepView: View {
     @State private var showAudioPicker = false
     @State private var previewReady = false
     @State private var showAudioSettings = false
+    @State private var audioPlayer: AVAudioPlayer?
+    @State private var isPlayingPreview = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -21,6 +24,12 @@ struct VoiceStepView: View {
                         .fontWeight(.semibold)
                     Text("Importez un sample vocal de référence (10-30 secondes)")
                         .foregroundColor(.secondary)
+                    
+                    // Avertissement MLX
+                    Text("⚠️ La génération locale (MLX) n'est pas encore implémentée. Utilisez Fish.Audio API.")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .padding(.top, 4)
                 }
                 
                 Spacer()
@@ -141,10 +150,22 @@ struct VoiceStepView: View {
                         .disabled(!project.voiceConfig.hasValidReference || pipelineVM.isProcessing)
 
                         if pipelineVM.progressText == "Preview prêt !" {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                Text("Preview généré")
+                            VStack(spacing: 8) {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text("Preview généré")
+                                }
+                                
+                                // Lecteur audio pour le preview
+                                Button(action: { playPreview(project: project) }) {
+                                    HStack {
+                                        Image(systemName: isPlayingPreview ? "stop.circle.fill" : "play.circle.fill")
+                                        Text(isPlayingPreview ? "Arrêter" : "Écouter le preview")
+                                    }
+                                    .frame(maxWidth: 200)
+                                }
+                                .buttonStyle(.bordered)
                             }
                         }
                         
@@ -192,6 +213,39 @@ struct VoiceStepView: View {
                     get: { project.voiceConfig },
                     set: { pipelineVM.updateVoiceConfig($0) }
                 ))
+            }
+        }
+    }
+    
+    // MARK: - Audio Player
+    
+    private func playPreview(project: Project) {
+        let previewPath = "\(project.projectDirectory)/voice_preview.wav"
+        let url = URL(fileURLWithPath: previewPath)
+        
+        guard FileManager.default.fileExists(atPath: previewPath) else {
+            print("❌ Preview file not found: \(previewPath)")
+            return
+        }
+        
+        if isPlayingPreview {
+            // Arrêter la lecture
+            audioPlayer?.stop()
+            audioPlayer = nil
+            isPlayingPreview = false
+        } else {
+            // Démarrer la lecture
+            do {
+                audioPlayer = try AVAudioPlayer(contentsOf: url)
+                audioPlayer?.play()
+                isPlayingPreview = true
+                
+                // Arrêter automatiquement à la fin
+                DispatchQueue.main.asyncAfter(deadline: .now() + (audioPlayer?.duration ?? 0)) {
+                    isPlayingPreview = false
+                }
+            } catch {
+                print("❌ Error playing preview: \(error.localizedDescription)")
             }
         }
     }

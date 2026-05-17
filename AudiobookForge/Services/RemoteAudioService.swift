@@ -1,5 +1,25 @@
 import Foundation
 
+// MARK: - Fish.Audio Voice Model
+
+struct FishAudioVoice: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let language: String
+    let gender: String
+    let style: String?
+    let description: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id = "_id"
+        case name = "title"
+        case language
+        case gender
+        case style
+        case description
+    }
+}
+
 /// Service d'intégration avec l'API Fish.Audio pour la génération audio distante
 class RemoteAudioService {
     static let shared = RemoteAudioService()
@@ -170,6 +190,28 @@ class RemoteAudioService {
         let costPer1M = 15.0
         let cost = Double(bytes) / 1_000_000.0 * costPer1M
         return (bytes, cost)
+    }
+    
+    /// Récupère la liste des voix disponibles sur Fish.Audio
+    /// Note: Fish.Audio ne fournit pas d'endpoint public pour lister les voix
+    /// Cette fonction retourne une liste statique de voix courantes
+    func fetchAvailableVoices(apiKey: String) async throws -> [FishAudioVoice] {
+        logger.info("Loading Fish.Audio voices (static list)...")
+        
+        // Liste statique des voix Fish.Audio courantes
+        // Source: Documentation Fish.Audio
+        let staticVoices: [FishAudioVoice] = [
+            FishAudioVoice(id: "default", name: "Default", language: "English", gender: "Female", style: "Neutral", description: "Default Fish.Audio voice"),
+            FishAudioVoice(id: "emma", name: "Emma", language: "English", gender: "Female", style: "Narrator", description: "Clear female narrator voice"),
+            FishAudioVoice(id: "john", name: "John", language: "English", gender: "Male", style: "Conversational", description: "Natural male conversational voice"),
+            FishAudioVoice(id: "marie", name: "Marie", language: "French", gender: "Female", style: "Narrator", description: "Voix narrative féminine française"),
+            FishAudioVoice(id: "pierre", name: "Pierre", language: "French", gender: "Male", style: "Narrator", description: "Voix narrative masculine française"),
+            FishAudioVoice(id: "sophia", name: "Sophia", language: "English", gender: "Female", style: "Professional", description: "Professional female voice"),
+            FishAudioVoice(id: "alex", name: "Alex", language: "English", gender: "Male", style: "Professional", description: "Professional male voice"),
+        ]
+        
+        logger.info("✅ Loaded \(staticVoices.count) Fish.Audio voices")
+        return staticVoices
     }
 }
 

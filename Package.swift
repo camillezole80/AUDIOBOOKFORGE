@@ -15,7 +15,10 @@ let package = Package(
             name: "AudiobookForge",
             dependencies: [],
             path: "AudiobookForge",
-            exclude: ["Info.plist", "AppIcon.png"]
+            exclude: ["Info.plist", "AppIcon.png"],
+            resources: [
+                .process("Assets.xcassets")
+            ]
         )
     ]
 )

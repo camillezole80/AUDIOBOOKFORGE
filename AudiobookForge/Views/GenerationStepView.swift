@@ -1,8 +1,11 @@
 import SwiftUI
+import AVFoundation
 
 /// Étape 4 : Génération audio
 struct GenerationStepView: View {
     @EnvironmentObject private var pipelineVM: PipelineViewModel
+    @State private var audioPlayer: AVAudioPlayer?
+    @State private var playingChapterIndex: Int?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -123,6 +126,8 @@ struct ChapterProgressRow: View {
     let index: Int
     let chapter: Chapter
     @EnvironmentObject private var pipelineVM: PipelineViewModel
+    @State private var audioPlayer: AVAudioPlayer?
+    @State private var isPlaying = false
 
     var body: some View {
         HStack {
@@ -138,6 +143,16 @@ struct ChapterProgressRow: View {
             Spacer()
 
             StatusBadge(status: chapter.status)
+            
+            // Bouton pour écouter le chapitre généré
+            if chapter.status == .audioReady, let audioPath = chapter.audioFilePath {
+                Button(action: { playChapter(audioPath: audioPath) }) {
+                    Image(systemName: isPlaying ? "stop.circle.fill" : "speaker.wave.2.circle")
+                        .foregroundColor(.green)
+                }
+                .buttonStyle(.borderless)
+                .help(isPlaying ? "Arrêter la lecture" : "Écouter ce chapitre")
+            }
             
             // Bouton pour générer ce chapitre individuellement
             if chapter.status == .tagged && chapter.audioFilePath == nil {
@@ -158,6 +173,36 @@ struct ChapterProgressRow: View {
         .padding(.horizontal, 8)
         .background(Color(NSColor.textBackgroundColor))
         .cornerRadius(4)
+    }
+    
+    private func playChapter(audioPath: String) {
+        let url = URL(fileURLWithPath: audioPath)
+        
+        guard FileManager.default.fileExists(atPath: audioPath) else {
+            print("❌ Audio file not found: \(audioPath)")
+            return
+        }
+        
+        if isPlaying {
+            // Arrêter la lecture
+            audioPlayer?.stop()
+            audioPlayer = nil
+            isPlaying = false
+        } else {
+            // Démarrer la lecture
+            do {
+                audioPlayer = try AVAudioPlayer(contentsOf: url)
+                audioPlayer?.play()
+                isPlaying = true
+                
+                // Arrêter automatiquement à la fin
+                DispatchQueue.main.asyncAfter(deadline: .now() + (audioPlayer?.duration ?? 0)) {
+                    isPlaying = false
+                }
+            } catch {
+                print("❌ Error playing chapter: \(error.localizedDescription)")
+            }
+        }
     }
 }
 

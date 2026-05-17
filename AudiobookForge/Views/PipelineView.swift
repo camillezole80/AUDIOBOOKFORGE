@@ -45,6 +45,7 @@ struct PipelineView: View {
 
 struct StepBarView: View {
     let currentStep: PipelineViewModel.PipelineStep
+    @EnvironmentObject private var pipelineVM: PipelineViewModel
 
     var body: some View {
         HStack(spacing: 0) {
@@ -53,7 +54,11 @@ struct StepBarView: View {
                     step: step,
                     isActive: step == currentStep,
                     isCompleted: step.rawValue < currentStep.rawValue,
-                    isBlocked: step.rawValue > currentStep.rawValue + 1
+                    isBlocked: false, // Navigation libre entre toutes les étapes
+                    action: {
+                        // Permettre la navigation libre entre toutes les étapes
+                        pipelineVM.currentStep = step
+                    }
                 )
 
                 if step.rawValue < PipelineViewModel.PipelineStep.allCases.count - 1 {
@@ -75,30 +80,36 @@ struct StepItemView: View {
     let isActive: Bool
     let isCompleted: Bool
     let isBlocked: Bool
+    let action: () -> Void
 
     var body: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .fill(backgroundColor)
-                    .frame(width: 32, height: 32)
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(backgroundColor)
+                        .frame(width: 32, height: 32)
 
-                if isCompleted {
-                    Image(systemName: "checkmark")
-                        .font(.caption)
-                        .foregroundColor(.white)
-                } else {
-                    Image(systemName: step.icon)
-                        .font(.caption)
-                        .foregroundColor(iconColor)
+                    if isCompleted {
+                        Image(systemName: "checkmark")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                    } else {
+                        Image(systemName: step.icon)
+                            .font(.caption)
+                            .foregroundColor(iconColor)
+                    }
                 }
-            }
 
-            Text(step.title)
-                .font(.caption2)
-                .foregroundColor(isActive ? .primary : .secondary)
+                Text(step.title)
+                    .font(.caption2)
+                    .foregroundColor(isActive ? .primary : .secondary)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+        .buttonStyle(.plain)
+        .disabled(isBlocked)
+        .help(isBlocked ? "Complétez les étapes précédentes" : "Cliquez pour aller à cette étape")
     }
 
     private var backgroundColor: Color {

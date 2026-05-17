@@ -10,11 +10,18 @@ class PathResolver {
     
     /// Résout la racine du projet (priorité à la variable d'env, puis au bundle, puis fallback)
     var projectRoot: String {
+        // Priorité 1 : Chemin fixe pour le disque externe J3THext
+        let fixedPath = "/Volumes/J3THext/Audiobookforge"
+        if FileManager.default.fileExists(atPath: "\(fixedPath)/backend/scripts") {
+            return fixedPath
+        }
+        
+        // Priorité 2 : Variable d'environnement
         if let root = ProcessInfo.processInfo.environment["AUDIOBOOKFORGE_ROOT"] {
             return root
         }
         
-        // Fallback : remonter depuis le bundle
+        // Priorité 3 : Remonter depuis le bundle
         // Bundle.main.bundleURL = .../.build/debug/AudiobookForge.app
         let url = Bundle.main.bundleURL
             .deletingLastPathComponent() // .../.build/debug/

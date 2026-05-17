@@ -332,16 +332,24 @@ class PipelineViewModel: ObservableObject {
     }
     
     func updateVoiceConfig(_ config: VoiceConfig) {
-        guard var project = project else { return }
+        guard var project = project else {
+            print("⚠️ updateVoiceConfig: No project loaded")
+            return
+        }
+        
+        print("🔧 updateVoiceConfig called:")
+        print("  - Project: \(project.name)")
+        print("  - preferredProvider: \(config.preferredProvider.rawValue)")
+        print("  - forceRemote: \(config.forceRemote)")
+        print("  - fallbackToRemote: \(config.fallbackToRemote)")
+        print("  - selectedVoice: \(config.selectedFishAudioVoice ?? "none")")
+        print("  - hasValidReference: \(config.hasValidReference)")
+        
         project.voiceConfig = config
         projectManager.updateProject(project)
         self.project = project
         
-        // DEBUG
-        print("🔧 VoiceConfig mis à jour dans le projet:")
-        print("  - preferredProvider: \(config.preferredProvider.rawValue)")
-        print("  - forceRemote: \(config.forceRemote)")
-        print("  - hasValidReference: \(config.hasValidReference)")
+        print("✅ VoiceConfig updated and saved to disk")
     }
 
     func generateVoicePreview() async {
@@ -586,5 +594,53 @@ class PipelineViewModel: ObservableObject {
             // Ignorer les erreurs de notification (non critique)
             print("Failed to send notification: \(error)")
         }
+    }
+    
+    // MARK: - Export du texte balisé
+    
+    enum TextExportFormat {
+        case txt
+        case pdf
+    }
+    
+    func exportTaggedText(format: TextExportFormat) async {
+        guard let project = project else { return }
+        
+        isProcessing = true
+        errorMessage = nil
+        progressText = "Export du texte balisé..."
+        
+        // Créer le nom de fichier
+        let fileName = project.metadata.title.isEmpty ? project.name : project.metadata.title
+        let sanitizedName = fileName.replacingOccurrences(of: "[^a-zA-Z0-9_-]", with: "_", options: .regularExpression)
+        let ext = format == .txt ? "txt" : "pdf"
+        let outputPath = "\(project.projectDirectory)/export/\(sanitizedName)_tagged.\(ext)"
+        
+        // Créer le dossier export si nécessaire
+        try? FileManager.default.createDirectory(atPath: "\(project.projectDirectory)/export", withIntermediateDirectories: true)
+        
+        do {
+            let textExportService = TextExportService.shared
+            
+            if format == .txt {
+                try textExportService.exportToTXT(project: project, outputPath: outputPath)
+            } else {
+                try textExportService.exportToPDF(project: project, outputPath: outputPath)
+            }
+            
+            progressText = "Export terminé : \(outputPath)"
+            
+            // Ouvrir le fichier dans le Finder
+            NSWorkspace.shared.selectFile(outputPath, inFileViewerRootedAtPath: "")
+            
+            // Notification
+            await sendNotification(title: "AudiobookForge", body: "Export du texte balisé terminé")
+            
+        } catch {
+            errorMessage = "Erreur lors de l'export : \(error.localizedDescription)"
+            showError = true
+        }
+        
+        isProcessing = false
     }
 }

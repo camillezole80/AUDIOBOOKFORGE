@@ -30,9 +30,8 @@ struct Project: Identifiable, Codable, Hashable {
     }
 
     var projectDirectory: String {
-        let baseDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/AudiobookForge/Projects")
-            .path
+        // Utiliser le disque externe J3THext pour stocker les fichiers audio
+        let baseDir = "/Volumes/J3THext/Audiobookforge/audio/Projects"
         return "\(baseDir)/\(name)"
     }
 
@@ -104,10 +103,11 @@ struct VoiceConfig: Codable {
     var voices: [VoiceProfile] = []
     
     // Configuration pour Fish.Audio API
-    var preferredProvider: AudioProvider = .local
+    var preferredProvider: AudioProvider = .fishAudio  // Changé de .local à .fishAudio (MLX pas encore implémenté)
     var forceRemote: Bool = false
     var fallbackToRemote: Bool = true
     var fishAudioReferenceId: String? = nil  // ID de la voix sauvegardée sur Fish.Audio
+    var selectedFishAudioVoice: String? = nil  // ID de la voix prédéfinie sélectionnée
 
     var hasValidReference: Bool {
         // Si Fish.Audio est configuré, pas besoin de référence locale

@@ -20,6 +20,14 @@ struct AudioSettingsView: View {
     @State private var showCreateReferenceSheet = false
     @State private var referenceId: String = ""
     
+    // Sélecteur de voix Fish.Audio
+    @State private var availableVoices: [FishAudioVoice] = []
+    @State private var isLoadingVoices = false
+    @State private var selectedVoiceId: String?
+    @State private var voiceSearchText: String = ""
+    @State private var selectedLanguageFilter: String = "Toutes"
+    @State private var selectedGenderFilter: String = "Tous"
+    
     private let keychain = KeychainHelper.shared
     private let remoteAudio = RemoteAudioService.shared
     
@@ -135,6 +143,95 @@ struct AudioSettingsView: View {
                     
                     Divider()
                     
+                    // Sélecteur de voix Fish.Audio
+                    if localProvider == .fishAudio {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Sélection de voix")
+                                    .font(.headline)
+                                
+                                Spacer()
+                                
+                                if !fishAudioKey.isEmpty {
+                                    Button(action: { loadVoices() }) {
+                                        HStack {
+                                            Image(systemName: "arrow.clockwise")
+                                            Text(isLoadingVoices ? "Chargement..." : "Charger les voix")
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled(isLoadingVoices)
+                                }
+                            }
+                            
+                            if !availableVoices.isEmpty {
+                                // Barre de recherche
+                                TextField("🔍 Rechercher une voix...", text: $voiceSearchText)
+                                    .textFieldStyle(.roundedBorder)
+                                
+                                // Filtres
+                                HStack {
+                                    Picker("Langue", selection: $selectedLanguageFilter) {
+                                        Text("Toutes").tag("Toutes")
+                                        ForEach(uniqueLanguages, id: \.self) { lang in
+                                            Text(lang).tag(lang)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    
+                                    Picker("Genre", selection: $selectedGenderFilter) {
+                                        Text("Tous").tag("Tous")
+                                        ForEach(uniqueGenders, id: \.self) { gender in
+                                            Text(gender).tag(gender)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                }
+                                
+                                // Liste des voix
+                                ScrollView {
+                                    VStack(spacing: 8) {
+                                        ForEach(filteredVoices) { voice in
+                                            VoiceRow(
+                                                voice: voice,
+                                                isSelected: selectedVoiceId == voice.id,
+                                                action: { selectedVoiceId = voice.id }
+                                            )
+                                        }
+                                    }
+                                }
+                                .frame(height: 200)
+                                .background(Color(NSColor.controlBackgroundColor))
+                                .cornerRadius(8)
+                                
+                                // Voix sélectionnée
+                                if let selectedVoice = availableVoices.first(where: { $0.id == selectedVoiceId }) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Voix sélectionnée : \(selectedVoice.name)")
+                                            .font(.caption)
+                                            .fontWeight(.semibold)
+                                        if let description = selectedVoice.description {
+                                            Text(description)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.accentColor.opacity(0.1))
+                                    .cornerRadius(8)
+                                }
+                            } else if fishAudioKey.isEmpty {
+                                Text("Entrez votre clé API et testez la connexion pour charger les voix disponibles.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        Divider()
+                    }
+                    
                     // Voix sauvegardée
                     if localProvider == .fishAudio {
                         VStack(alignment: .leading, spacing: 12) {
@@ -247,6 +344,11 @@ struct AudioSettingsView: View {
         voiceConfig.forceRemote = localForceRemote
         voiceConfig.fallbackToRemote = localFallbackToRemote
         
+        // Sauvegarder la voix sélectionnée
+        if let voiceId = selectedVoiceId {
+            voiceConfig.selectedFishAudioVoice = voiceId
+        }
+        
         // Sauvegarder la clé API dans le keychain
         if !fishAudioKey.isEmpty {
             _ = keychain.save(key: fishAudioKey, for: .fishAudio)
@@ -257,6 +359,7 @@ struct AudioSettingsView: View {
         print("  - preferredProvider: \(localProvider.rawValue)")
         print("  - forceRemote: \(localForceRemote)")
         print("  - fallbackToRemote: \(localFallbackToRemote)")
+        print("  - selectedVoice: \(selectedVoiceId ?? "none")")
     }
     
     private func testConnection() {
@@ -279,6 +382,119 @@ struct AudioSettingsView: View {
                 }
             }
         }
+    }
+    
+    private func loadVoices() {
+        isLoadingVoices = true
+        
+        Task {
+            do {
+                print("🔍 Chargement des voix Fish.Audio...")
+                let voices = try await remoteAudio.fetchAvailableVoices(apiKey: fishAudioKey)
+                
+                await MainActor.run {
+                    availableVoices = voices
+                    isLoadingVoices = false
+                    
+                    print("✅ \(voices.count) voix chargées")
+                    
+                    // Charger la voix sélectionnée si elle existe
+                    if let savedVoiceId = voiceConfig.selectedFishAudioVoice {
+                        selectedVoiceId = savedVoiceId
+                    }
+                    
+                    // Afficher un message si aucune voix n'est disponible
+                    if voices.isEmpty {
+                        testResult = "⚠️ Aucune voix disponible"
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingVoices = false
+                    testResult = "❌ Erreur: \(error.localizedDescription)"
+                    print("❌ Erreur lors du chargement des voix: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    // MARK: - Computed Properties
+    
+    private var uniqueLanguages: [String] {
+        Array(Set(availableVoices.map { $0.language })).sorted()
+    }
+    
+    private var uniqueGenders: [String] {
+        Array(Set(availableVoices.map { $0.gender })).sorted()
+    }
+    
+    private var filteredVoices: [FishAudioVoice] {
+        availableVoices.filter { voice in
+            let matchesSearch = voiceSearchText.isEmpty || 
+                voice.name.localizedCaseInsensitiveContains(voiceSearchText) ||
+                (voice.description?.localizedCaseInsensitiveContains(voiceSearchText) ?? false)
+            
+            let matchesLanguage = selectedLanguageFilter == "Toutes" || voice.language == selectedLanguageFilter
+            let matchesGender = selectedGenderFilter == "Tous" || voice.gender == selectedGenderFilter
+            
+            return matchesSearch && matchesLanguage && matchesGender
+        }
+    }
+}
+
+// MARK: - Voice Row
+
+struct VoiceRow: View {
+    let voice: FishAudioVoice
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(voice.name)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    
+                    HStack(spacing: 8) {
+                        Text(voice.gender)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Text("•")
+                            .foregroundColor(.secondary)
+                        
+                        Text(voice.language)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        if let style = voice.style {
+                            Text("•")
+                                .foregroundColor(.secondary)
+                            
+                            Text(style)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
+                Spacer()
+                
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.accentColor)
+                } else {
+                    Image(systemName: "circle")
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(8)
+            .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
+            .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
     }
 }
 

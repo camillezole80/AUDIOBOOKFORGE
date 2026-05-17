@@ -68,12 +68,23 @@ class AudioGenerationService {
     ) async throws {
         logger.debug("Generating chunk \(chunkIndex): \(text.prefix(50))...")
         
+        // DEBUG: Afficher la configuration reçue
+        print("🔍 DEBUG generateChunkAudio:")
+        print("  - preferredProvider: \(voiceConfig.preferredProvider.rawValue)")
+        print("  - forceRemote: \(voiceConfig.forceRemote)")
+        print("  - fallbackToRemote: \(voiceConfig.fallbackToRemote)")
+        print("  - requiresAPIKey: \(voiceConfig.preferredProvider.requiresAPIKey)")
+        
         // Déterminer le provider à utiliser
         let provider = voiceConfig.preferredProvider
         let useRemote = voiceConfig.forceRemote || (provider == .fishAudio)
         
+        print("  - useRemote: \(useRemote)")
+        print("  - Condition (useRemote && requiresAPIKey): \(useRemote && provider.requiresAPIKey)")
+        
         if useRemote && provider.requiresAPIKey {
             // Utiliser Fish.Audio API
+            print("  ✅ Utilisation de Fish.Audio API")
             try await generateChunkViaFishAudio(
                 text: text,
                 referenceAudio: referenceAudio,
@@ -84,6 +95,7 @@ class AudioGenerationService {
             )
         } else {
             // Utiliser MLX local (code original)
+            print("  ⚠️ Utilisation de MLX local (fallback)")
             try await generateChunkViaMLX(
                 text: text,
                 referenceAudio: referenceAudio,
@@ -228,9 +240,11 @@ class AudioGenerationService {
                     voiceConfig: voiceConfig
                 )
                 chunks[index].status = .done
+                logger.info("✅ Chunk \(index) généré avec succès")
             } catch {
                 chunks[index].status = .error
                 chunks[index].errorMessage = error.localizedDescription
+                logger.error("❌ Chunk \(index) échoué: \(error.localizedDescription)")
             }
 
             await MainActor.run {
@@ -240,8 +254,16 @@ class AudioGenerationService {
 
         // Assembler les chunks en un fichier chapitre
         let chapterAudioPath = "\(chaptersDir)/chapter_\(chapter.index).wav"
-        try await assembleChunks(chunks: chunks.filter { $0.status == .done },
-                                 outputPath: chapterAudioPath)
+        let validChunks = chunks.filter { $0.status == .done }
+        
+        logger.info("📊 Chunks générés: \(chunks.count), valides: \(validChunks.count)")
+        
+        if validChunks.isEmpty {
+            logger.error("❌ Aucun chunk valide généré pour le chapitre \(chapter.index)")
+            throw AudioGenerationError.noValidChunks
+        }
+        
+        try await assembleChunks(chunks: validChunks, outputPath: chapterAudioPath)
 
         return (chunks, chapterAudioPath)
     }

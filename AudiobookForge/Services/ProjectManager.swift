@@ -107,8 +107,26 @@ class ProjectManager: ObservableObject {
 
     private func saveProject(_ project: Project) {
         let projectStatePath = "\(project.projectDirectory)/project.json"
-        guard let data = try? JSONEncoder().encode(project) else { return }
-        try? data.write(to: URL(fileURLWithPath: projectStatePath))
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        
+        guard let data = try? encoder.encode(project) else {
+            logger.error("❌ Failed to encode project: \(project.name)")
+            return
+        }
+        
+        do {
+            try data.write(to: URL(fileURLWithPath: projectStatePath))
+            logger.debug("✅ Project saved: \(project.name) (\(data.count) bytes)")
+            
+            // Log des paramètres audio pour debug
+            logger.debug("  - Audio provider: \(project.voiceConfig.preferredProvider.rawValue)")
+            logger.debug("  - Force remote: \(project.voiceConfig.forceRemote)")
+            logger.debug("  - Fallback to remote: \(project.voiceConfig.fallbackToRemote)")
+        } catch {
+            logger.error("❌ Failed to write project file: \(error.localizedDescription)")
+        }
     }
 
     private func loadProjectState(_ project: Project) {

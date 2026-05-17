@@ -33,6 +33,9 @@ struct AudiobookForgeApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Log de la version au démarrage
+        AppVersion.logVersion()
+        
         // Activer l'app au premier plan
         NSApp.activate(ignoringOtherApps: true)
         

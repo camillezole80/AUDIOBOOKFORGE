@@ -92,6 +92,34 @@ struct TagsStepView: View {
                         Divider()
                             .padding(.vertical, 8)
                         
+                        // Boutons d'export du texte balisé
+                        HStack(spacing: 12) {
+                            Button(action: {
+                                Task { await pipelineVM.exportTaggedText(format: .txt) }
+                            }) {
+                                HStack {
+                                    Image(systemName: "doc.text")
+                                    Text("Exporter en TXT")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(pipelineVM.isProcessing)
+                            
+                            Button(action: {
+                                Task { await pipelineVM.exportTaggedText(format: .pdf) }
+                            }) {
+                                HStack {
+                                    Image(systemName: "doc.richtext")
+                                    Text("Exporter en PDF")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(pipelineVM.isProcessing)
+                        }
+                        
+                        Divider()
+                            .padding(.vertical, 8)
+                        
                         // Bouton pour passer à l'étape suivante (même si balisage partiel)
                         let taggedCount = project.chapters.filter { $0.status == .tagged }.count
                         if taggedCount > 0 {
