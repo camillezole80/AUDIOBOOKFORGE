@@ -17,7 +17,7 @@ struct GenerationStepView: View {
                 Text("Génération audio")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Génération chapitre par chapitre via Fish S2 Pro MLX")
+                Text("Génération chapitre par chapitre")
                     .foregroundColor(.secondary)
             }
 
@@ -87,7 +87,7 @@ struct GenerationStepView: View {
                             HStack {
                                 Image(systemName: "info.circle")
                                     .foregroundColor(.green)
-                                Text("Génération locale via MLX")
+                                Text("Génération locale")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -154,18 +154,31 @@ struct ChapterProgressRow: View {
                 .help(isPlaying ? "Arrêter la lecture" : "Écouter ce chapitre")
             }
             
-            // Bouton pour générer ce chapitre individuellement
-            if chapter.status == .tagged && chapter.audioFilePath == nil {
+            // Bouton pour générer/régénérer ce chapitre individuellement
+            if chapter.status != .audioReady {
                 Button(action: {
                     Task {
                         await pipelineVM.generateSingleChapter(at: index)
                     }
                 }) {
-                    Image(systemName: "play.circle")
-                        .foregroundColor(.accentColor)
+                    Image(systemName: chapter.status == .error ? "arrow.clockwise.circle" : "play.circle")
+                        .foregroundColor(chapter.status == .error ? .red : .accentColor)
                 }
                 .buttonStyle(.borderless)
-                .help("Générer ce chapitre")
+                .help(chapter.status == .error ? "Relancer la génération" : "Générer ce chapitre")
+                .disabled(pipelineVM.isProcessing)
+            }
+            
+            // Bouton pour réinitialiser ce chapitre
+            if chapter.status == .audioReady {
+                Button(action: {
+                    pipelineVM.resetChapter(at: index)
+                }) {
+                    Image(systemName: "arrow.counterclockwise.circle")
+                        .foregroundColor(.orange)
+                }
+                .buttonStyle(.borderless)
+                .help("Réinitialiser ce chapitre")
                 .disabled(pipelineVM.isProcessing)
             }
         }

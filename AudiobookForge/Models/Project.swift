@@ -102,17 +102,31 @@ struct VoiceConfig: Codable {
     var temperature: Double = 0.8
     var voices: [VoiceProfile] = []
     
-    // Configuration pour Fish.Audio API
-    var preferredProvider: AudioProvider = .fishAudio  // Changé de .local à .fishAudio (MLX pas encore implémenté)
+    // Configuration audio
+    var preferredProvider: AudioProvider = .ttsAudiobookTool  // Par défaut: TTS Audiobook Tool
     var forceRemote: Bool = false
     var fallbackToRemote: Bool = true
     var fishAudioReferenceId: String? = nil  // ID de la voix sauvegardée sur Fish.Audio
     var selectedFishAudioVoice: String? = nil  // ID de la voix prédéfinie sélectionnée
+    
+    // Configuration pour TTS Audiobook Tool
+    var ttsModel: TtsModelType = .fishS2Pro
+    var enableSttValidation: Bool = true
+    var maxRetries: Int = 3
+    var enableUpsampling: Bool = false
+    var enableNormalization: Bool = true
+    var topP: Double? = nil
+    var topK: Int? = nil
+    var seed: Int? = nil
 
     var hasValidReference: Bool {
         // Si Fish.Audio est configuré, pas besoin de référence locale
         if preferredProvider == .fishAudio {
             return true
+        }
+        // TTS Audiobook Tool nécessite une référence locale
+        if preferredProvider == .ttsAudiobookTool {
+            return !referenceAudioPath.isEmpty && !referenceTranscription.isEmpty
         }
         // Sinon, vérifier la référence locale
         return !referenceAudioPath.isEmpty && !referenceTranscription.isEmpty
@@ -201,13 +215,15 @@ enum AIProvider: String, Codable, CaseIterable {
 // MARK: - Audio Configuration
 
 enum AudioProvider: String, Codable, CaseIterable {
-    case local = "Local (MLX)"
-    case fishAudio = "Fish.Audio API"
+    case local = "local"
+    case fishAudio = "fishAudio"
+    case ttsAudiobookTool = "ttsAudiobookTool"
     
     var displayName: String {
         switch self {
         case .local: return "Local (MLX - Gratuit)"
         case .fishAudio: return "Fish.Audio API"
+        case .ttsAudiobookTool: return "TTS Audiobook Tool (Local)"
         }
     }
     
@@ -219,6 +235,39 @@ enum AudioProvider: String, Codable, CaseIterable {
         switch self {
         case .local: return 0.0
         case .fishAudio: return 15.0  // $15 per 1M bytes UTF-8
+        case .ttsAudiobookTool: return 0.0
+        }
+    }
+}
+
+// MARK: - TTS Model Types
+
+enum TtsModelType: String, Codable, CaseIterable {
+    case fishS2Pro = "fish-s2"
+    case chatterbox = "chatterbox"
+    case qwen3 = "qwen3"
+    
+    var displayName: String {
+        switch self {
+        case .fishS2Pro: return "Fish S2-Pro (Haute qualité)"
+        case .chatterbox: return "Chatterbox (Multilingue)"
+        case .qwen3: return "Qwen3-TTS (Rapide)"
+        }
+    }
+    
+    var requiresVRAM: Int {
+        switch self {
+        case .fishS2Pro: return 24
+        case .chatterbox: return 8
+        case .qwen3: return 12
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .fishS2Pro: return "Qualité maximale, 24GB VRAM requis"
+        case .chatterbox: return "Multilingue, rapide, 8GB VRAM"
+        case .qwen3: return "Batch processing, efficace, 12GB VRAM"
         }
     }
 }

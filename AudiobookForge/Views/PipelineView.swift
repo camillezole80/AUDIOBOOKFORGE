@@ -35,8 +35,17 @@ struct PipelineView: View {
         }
         .alert("Erreur", isPresented: $pipelineVM.showError) {
             Button("OK", role: .cancel) {}
+            Button("Copier") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(pipelineVM.errorMessage ?? "Erreur inconnue", forType: .string)
+            }
         } message: {
-            Text(pipelineVM.errorMessage ?? "Erreur inconnue")
+            ScrollView {
+                Text(pipelineVM.errorMessage ?? "Erreur inconnue")
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 400)
         }
     }
 }

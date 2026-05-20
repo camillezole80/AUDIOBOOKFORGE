@@ -77,12 +77,11 @@ class AudioGenerationService {
         
         // Déterminer le provider à utiliser
         let provider = voiceConfig.preferredProvider
-        let useRemote = voiceConfig.forceRemote || (provider == .fishAudio)
         
-        print("  - useRemote: \(useRemote)")
-        print("  - Condition (useRemote && requiresAPIKey): \(useRemote && provider.requiresAPIKey)")
+        print("  - provider: \(provider.rawValue)")
         
-        if useRemote && provider.requiresAPIKey {
+        switch provider {
+        case .fishAudio:
             // Utiliser Fish.Audio API
             print("  ✅ Utilisation de Fish.Audio API")
             try await generateChunkViaFishAudio(
@@ -93,7 +92,20 @@ class AudioGenerationService {
                 chunkIndex: chunkIndex,
                 voiceConfig: voiceConfig
             )
-        } else {
+            
+        case .ttsAudiobookTool:
+            // Utiliser TTS Audiobook Tool
+            print("  ✅ Utilisation de TTS Audiobook Tool")
+            try await generateChunkViaTtsAudiobookTool(
+                text: text,
+                referenceAudio: referenceAudio,
+                referenceText: referenceText,
+                outputPath: outputPath,
+                chunkIndex: chunkIndex,
+                voiceConfig: voiceConfig
+            )
+            
+        case .local:
             // Utiliser MLX local (code original)
             print("  ⚠️ Utilisation de MLX local (fallback)")
             try await generateChunkViaMLX(
@@ -122,23 +134,26 @@ class AudioGenerationService {
             throw AudioGenerationError.missingAPIKey
         }
         
-        // Charger l'audio de référence
-        let referenceData: Data?
-        let refId = voiceConfig.fishAudioReferenceId
+        // Fish.Audio n'a pas d'endpoint pour créer des références sauvegardées
+        // On doit utiliser MessagePack pour envoyer l'audio inline
+        // Pour l'instant, on utilise un model ID public ou on lance une erreur
+        
+        let refId = voiceConfig.fishAudioReferenceId ?? voiceConfig.selectedFishAudioVoice
         
         if refId == nil {
-            // Zero-shot : charger l'audio de référence
-            referenceData = try Data(contentsOf: URL(fileURLWithPath: referenceAudio))
-        } else {
-            // Utiliser le reference_id sauvegardé
-            referenceData = nil
+            logger.error("❌ Fish.Audio nécessite soit:")
+            logger.error("   1. Un model ID public (sélectionné dans les réglages)")
+            logger.error("   2. MessagePack pour zero-shot cloning (non implémenté)")
+            throw AudioGenerationError.missingFishAudioReference
         }
         
-        // Appeler l'API
+        logger.info("✅ Utilisation du model Fish.Audio: \(refId!)")
+        
+        // Appeler l'API avec le reference_id
         let audioData = try await remoteAudioService.generateAudio(
             text: text,
-            referenceAudio: referenceData,
-            referenceText: referenceData != nil ? referenceText : nil,
+            referenceAudio: nil,
+            referenceText: nil,
             referenceId: refId,
             apiKey: apiKey,
             voiceConfig: voiceConfig
@@ -148,6 +163,185 @@ class AudioGenerationService {
         try audioData.write(to: URL(fileURLWithPath: outputPath))
         
         logger.info("Chunk \(chunkIndex) generated successfully via Fish.Audio API")
+    }
+    
+    /// Génère l'audio via TTS Audiobook Tool
+    private func generateChunkViaTtsAudiobookTool(
+        text: String,
+        referenceAudio: String,
+        referenceText: String,
+        outputPath: String,
+        chunkIndex: Int,
+        voiceConfig: VoiceConfig
+    ) async throws {
+        logger.info("Generating chunk \(chunkIndex) via TTS Audiobook Tool...")
+        
+        // Déterminer le venv à utiliser selon le modèle
+        let venvName: String
+        switch voiceConfig.ttsModel {
+        case .fishS2Pro:
+            venvName = "venv-fish-s2"
+        case .chatterbox:
+            venvName = "venv-chatterbox"
+        case .qwen3:
+            venvName = "venv-qwen3tts"
+        }
+        
+        let wrapperPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/audiobook_tool_wrapper.py"
+        let pythonPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/\(venvName)/bin/python"
+        
+        // Vérifier que le venv existe
+        guard FileManager.default.fileExists(atPath: pythonPath) else {
+            throw AudioGenerationError.ttsToolNotInstalled(venvName)
+        }
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        
+        var arguments = [
+            wrapperPath,
+            "generate",
+            "--model", voiceConfig.ttsModel.rawValue,
+            "--text", text,
+            "--reference-audio", referenceAudio,
+            "--reference-text", referenceText,
+            "--output", outputPath,
+            "--temperature", "\(voiceConfig.temperature)",
+            "--max-retries", "\(voiceConfig.maxRetries)"
+        ]
+        
+        // Ajouter les paramètres optionnels
+        if voiceConfig.enableSttValidation {
+            arguments.append("--enable-stt-validation")
+        }
+        
+        if let topP = voiceConfig.topP {
+            arguments.append(contentsOf: ["--top-p", "\(topP)"])
+        }
+        
+        if let topK = voiceConfig.topK {
+            arguments.append(contentsOf: ["--top-k", "\(topK)"])
+        }
+        
+        if let seed = voiceConfig.seed {
+            arguments.append(contentsOf: ["--seed", "\(seed)"])
+        }
+        
+        process.arguments = arguments
+        
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        
+        // Parser les logs JSON pour la progression
+        let outputHandle = outputPipe.fileHandleForReading
+        outputHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            
+            if let line = String(data: data, encoding: .utf8) {
+                // Parser les lignes JSON
+                for jsonLine in line.components(separatedBy: "\n") {
+                    guard !jsonLine.isEmpty else { continue }
+                    
+                    if let jsonData = jsonLine.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                        
+                        if let type = json["type"] as? String {
+                            if type == "progress", let data = json["data"] as? [String: Any] {
+                                if let status = data["status"] as? String {
+                                    self.logger.debug("TTS Tool: \(status)")
+                                }
+                            } else if type == "error", let message = json["message"] as? String {
+                                self.logger.error("TTS Tool Error: \(message)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        try process.run()
+        process.waitUntilExit()
+        
+        outputHandle.readabilityHandler = nil
+        
+        // Toujours vérifier si le fichier a été créé, même si terminationStatus != 0
+        // Car Python peut retourner un code d'erreur même avec juste des warnings
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+        
+        // Vérifier si le fichier audio a été créé
+        let fileExists = FileManager.default.fileExists(atPath: outputPath)
+        
+        if process.terminationStatus != 0 && !fileExists {
+            // Vraie erreur : pas de fichier créé
+            logger.error("❌ TTS Tool failed: \(errorOutput)")
+            throw AudioGenerationError.chunkGenerationFailed(chunkIndex, errorOutput)
+        }
+        
+        // Si le fichier existe, ignorer les warnings Python
+        if !errorOutput.isEmpty && fileExists {
+            logger.debug("⚠️ TTS Tool warnings (ignored): \(errorOutput.prefix(200))...")
+        }
+        
+        // Post-processing optionnel
+        if voiceConfig.enableNormalization {
+            logger.debug("Normalizing chunk \(chunkIndex)...")
+            try await normalizeViaTtsAudiobookTool(inputPath: outputPath, outputPath: outputPath, venvName: venvName)
+        }
+        
+        if voiceConfig.enableUpsampling {
+            logger.debug("Upsampling chunk \(chunkIndex)...")
+            try await upsampleViaTtsAudiobookTool(inputPath: outputPath, outputPath: outputPath, venvName: venvName)
+        }
+        
+        logger.info("Chunk \(chunkIndex) generated successfully via TTS Audiobook Tool")
+    }
+    
+    /// Normalise l'audio via TTS Audiobook Tool
+    private func normalizeViaTtsAudiobookTool(inputPath: String, outputPath: String, venvName: String) async throws {
+        let wrapperPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/audiobook_tool_wrapper.py"
+        let pythonPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/\(venvName)/bin/python"
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.arguments = [
+            wrapperPath,
+            "normalize",
+            "--input", inputPath,
+            "--output", outputPath
+        ]
+        
+        try process.run()
+        process.waitUntilExit()
+        
+        if process.terminationStatus != 0 {
+            throw AudioGenerationError.normalizationFailed("TTS Tool normalization failed")
+        }
+    }
+    
+    /// Upsample l'audio via TTS Audiobook Tool
+    private func upsampleViaTtsAudiobookTool(inputPath: String, outputPath: String, venvName: String) async throws {
+        let wrapperPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/audiobook_tool_wrapper.py"
+        let pythonPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/\(venvName)/bin/python"
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.arguments = [
+            wrapperPath,
+            "upsample",
+            "--input", inputPath,
+            "--output", outputPath
+        ]
+        
+        try process.run()
+        process.waitUntilExit()
+        
+        if process.terminationStatus != 0 {
+            throw AudioGenerationError.normalizationFailed("TTS Tool upsampling failed")
+        }
     }
     
     /// Génère l'audio via MLX local (code original)
@@ -353,6 +547,8 @@ enum AudioGenerationError: Error, LocalizedError {
     case ffmpegNotFound
     case normalizationFailed(String)
     case missingAPIKey
+    case missingFishAudioReference
+    case ttsToolNotInstalled(String)
 
     var errorDescription: String? {
         switch self {
@@ -366,6 +562,10 @@ enum AudioGenerationError: Error, LocalizedError {
             return "Échec de la normalisation : \(message)"
         case .missingAPIKey:
             return "Clé API Fish.Audio manquante"
+        case .missingFishAudioReference:
+            return "Fish.Audio nécessite un model ID public. Sélectionnez une voix dans les réglages audio."
+        case .ttsToolNotInstalled(let venvName):
+            return "TTS Audiobook Tool non installé. Environnement manquant : \(venvName). Exécutez : cd external/tts-audiobook-tool && ./setup_venvs.sh"
         }
     }
 }

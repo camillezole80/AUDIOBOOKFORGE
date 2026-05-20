@@ -24,12 +24,6 @@ struct VoiceStepView: View {
                         .fontWeight(.semibold)
                     Text("Importez un sample vocal de référence (10-30 secondes)")
                         .foregroundColor(.secondary)
-                    
-                    // Avertissement MLX
-                    Text("⚠️ La génération locale (MLX) n'est pas encore implémentée. Utilisez Fish.Audio API.")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                        .padding(.top, 4)
                 }
                 
                 Spacer()
@@ -42,12 +36,9 @@ struct VoiceStepView: View {
                             .foregroundColor(.green)
                     }
                     .buttonStyle(.borderless)
-                    .help("Configurer la génération audio (Local / Fish.Audio API)")
+                    .help("Configurer la génération audio (TTS Audiobook Tool / Fish.Audio API)")
                     
-                    Text("Génération distante")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("par API")
+                    Text("Réglages audio")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }

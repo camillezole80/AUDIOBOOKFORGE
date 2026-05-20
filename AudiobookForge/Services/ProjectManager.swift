@@ -92,11 +92,62 @@ class ProjectManager: ObservableObject {
 
     private func loadProjects() {
         let listPath = "\(projectsDirectory)/projects.json"
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: listPath)),
-              let decoded = try? JSONDecoder().decode([Project].self, from: data) else {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: listPath)) else {
+            logger.info("No projects list found, scanning project directories...")
+            scanProjectDirectories()
             return
         }
-        projects = decoded
+        
+        let decoder = JSONDecoder()
+        do {
+            projects = try decoder.decode([Project].self, from: data)
+            logger.info("✅ Loaded \(projects.count) projects from list")
+        } catch {
+            logger.error("❌ Failed to decode projects list: \(error.localizedDescription)")
+            logger.info("Attempting to scan project directories...")
+            scanProjectDirectories()
+        }
+    }
+    
+    private func scanProjectDirectories() {
+        // Scanner le dossier /Volumes/J3THext/Audiobookforge/audio/Projects
+        let audioProjectsDir = "/Volumes/J3THext/Audiobookforge/audio/Projects"
+        
+        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: audioProjectsDir) else {
+            logger.warning("Could not scan audio projects directory")
+            return
+        }
+        
+        var scannedProjects: [Project] = []
+        
+        for projectName in contents {
+            let projectPath = "\(audioProjectsDir)/\(projectName)"
+            let projectJsonPath = "\(projectPath)/project.json"
+            
+            guard FileManager.default.fileExists(atPath: projectJsonPath) else {
+                continue
+            }
+            
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: projectJsonPath)) else {
+                logger.warning("Could not read project.json for \(projectName)")
+                continue
+            }
+            
+            let decoder = JSONDecoder()
+            do {
+                let project = try decoder.decode(Project.self, from: data)
+                scannedProjects.append(project)
+                logger.info("✅ Scanned project: \(project.name)")
+            } catch {
+                logger.error("❌ Failed to decode project \(projectName): \(error.localizedDescription)")
+            }
+        }
+        
+        projects = scannedProjects
+        logger.info("✅ Scanned \(projects.count) projects from directories")
+        
+        // Sauvegarder la liste pour la prochaine fois
+        saveProjectsList()
     }
 
     private func saveProjectsList() {

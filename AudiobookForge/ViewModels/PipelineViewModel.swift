@@ -42,6 +42,43 @@ class PipelineViewModel: ObservableObject {
     private let projectManager = ProjectManager.shared
     private let diskChecker = DiskSpaceChecker()
     private let chunkCleaner = ChunkCleaner()
+    
+    init() {
+        // Écouter la notification de sauvegarde du projet
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("SaveProject"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.saveCurrentProject()
+        }
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    private func saveCurrentProject() {
+        guard let project = project else {
+            print("⚠️ saveCurrentProject: Aucun projet chargé")
+            return
+        }
+        
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("💾 PipelineViewModel.saveCurrentProject() appelé")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("📝 Projet actuel:")
+        print("  - Nom: \(project.name)")
+        print("  - preferredProvider: \(project.voiceConfig.preferredProvider.rawValue)")
+        print("  - ttsModel: \(project.voiceConfig.ttsModel.rawValue)")
+        print("")
+        print("📤 Appel de projectManager.updateProject()...")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        
+        projectManager.updateProject(project)
+        
+        print("✅ projectManager.updateProject() terminé")
+    }
 
     enum PipelineStep: Int, CaseIterable {
         case import_ = 0
@@ -313,8 +350,49 @@ class PipelineViewModel: ObservableObject {
 
         project.voiceConfig.referenceAudioPath = audioPath
         project.voiceConfig.referenceTranscription = transcription
+        
+        // NOTE: Création automatique de référence Fish.Audio désactivée
+        // L'endpoint /v1/references/add n'existe pas dans l'API Fish.Audio
+        // Utiliser les voix prédéfinies ("john", "emma", "marie", "pierre", etc.)
+        
         projectManager.updateProject(project)
         self.project = project
+    }
+    
+    /// Crée une référence sauvegardée sur Fish.Audio
+    private func createFishAudioReference(audioPath: String, transcription: String) async {
+        guard var project = project else { return }
+        guard let apiKey = keychain.get(for: .fishAudio) else {
+            print("⚠️ Clé API Fish.Audio manquante")
+            return
+        }
+        
+        do {
+            // Charger l'audio
+            let audioData = try Data(contentsOf: URL(fileURLWithPath: audioPath))
+            
+            // Générer un ID unique pour cette référence
+            let referenceId = "ref_\(project.id.uuidString)"
+            
+            print("📤 Création de la référence Fish.Audio: \(referenceId)")
+            
+            // Créer la référence sur Fish.Audio
+            try await RemoteAudioService.shared.createReference(
+                id: referenceId,
+                audio: audioData,
+                text: transcription,
+                apiKey: apiKey
+            )
+            
+            // Sauvegarder le reference_id dans le projet
+            project.voiceConfig.fishAudioReferenceId = referenceId
+            projectManager.updateProject(project)
+            self.project = project
+            
+            print("✅ Référence Fish.Audio créée avec succès: \(referenceId)")
+        } catch {
+            print("❌ Erreur lors de la création de la référence Fish.Audio: \(error.localizedDescription)")
+        }
     }
 
     func updateVoiceSpeed(_ speed: Double) {
@@ -403,14 +481,16 @@ class PipelineViewModel: ObservableObject {
         for (chapterIndex, chapter) in updatedProject.chapters.enumerated() {
             guard !isPaused else { break }
             
-            // Ignorer les chapitres non balisés ou déjà générés
-            if chapter.status != .tagged {
-                progressText = "Chapitre \(chapterIndex + 1) ignoré (non balisé)"
+            // Ignorer les chapitres déjà générés
+            if chapter.status == .audioReady && chapter.audioFilePath != nil {
+                progressText = "Chapitre \(chapterIndex + 1) déjà généré (reprise)"
                 continue
             }
             
-            if chapter.status == .audioReady && chapter.audioFilePath != nil {
-                progressText = "Chapitre \(chapterIndex + 1) déjà généré (reprise)"
+            // Vérifier qu'il y a du texte (balisé ou brut)
+            let textToGenerate = chapter.taggedText ?? chapter.rawText
+            if textToGenerate.isEmpty {
+                progressText = "Chapitre \(chapterIndex + 1) ignoré (vide)"
                 continue
             }
 
@@ -474,9 +554,10 @@ class PipelineViewModel: ObservableObject {
         
         let chapter = project.chapters[index]
         
-        // Vérifier que le chapitre est balisé
-        guard chapter.status == .tagged else {
-            errorMessage = "Le chapitre doit être balisé avant la génération"
+        // Vérifier qu'il y a du texte (balisé ou brut)
+        let textToGenerate = chapter.taggedText ?? chapter.rawText
+        guard !textToGenerate.isEmpty else {
+            errorMessage = "Le chapitre est vide"
             showError = true
             return
         }
@@ -525,6 +606,45 @@ class PipelineViewModel: ObservableObject {
         }
         
         isProcessing = false
+    }
+    
+    func resetChapter(at index: Int) {
+        guard var project = project,
+              index < project.chapters.count else { return }
+        
+        // Supprimer le fichier audio si il existe
+        if let audioPath = project.chapters[index].audioFilePath {
+            try? FileManager.default.removeItem(atPath: audioPath)
+        }
+        
+        // Réinitialiser le statut
+        project.chapters[index].audioFilePath = nil
+        project.chapters[index].status = .tagged
+        
+        projectManager.updateProject(project)
+        self.project = project
+        
+        print("🔄 Chapitre \(index + 1) réinitialisé")
+    }
+    
+    func resetAllChapters() {
+        guard var project = project else { return }
+        
+        for index in 0..<project.chapters.count {
+            if let audioPath = project.chapters[index].audioFilePath {
+                try? FileManager.default.removeItem(atPath: audioPath)
+            }
+            
+            if project.chapters[index].status == .audioReady {
+                project.chapters[index].audioFilePath = nil
+                project.chapters[index].status = .tagged
+            }
+        }
+        
+        projectManager.updateProject(project)
+        self.project = project
+        
+        print("🔄 Tous les chapitres réinitialisés")
     }
 
     // MARK: - Étape 5: Export

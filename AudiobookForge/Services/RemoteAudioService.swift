@@ -70,20 +70,13 @@ class RemoteAudioService {
             ]
         ]
         
-        // Méthode A : Utiliser un reference_id sauvegardé
+        // Utiliser le reference_id sauvegardé
         if let refId = referenceId {
             logger.info("Using saved reference ID: \(refId)")
             body["reference_id"] = refId
-        }
-        // Méthode B : Voice cloning à la volée (zero-shot)
-        else if let audioData = referenceAudio, let refText = referenceText {
-            logger.info("Using zero-shot voice cloning")
-            let base64Audio = audioData.base64EncodedString()
-            body["references"] = [[
-                "audio": base64Audio,
-                "text": refText
-            ]]
         } else {
+            // Si pas de reference_id, on doit en créer un d'abord
+            logger.error("No reference_id provided. Zero-shot cloning requires MessagePack, not JSON.")
             throw RemoteAudioError.missingReference
         }
         

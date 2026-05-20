@@ -144,13 +144,20 @@ struct TagList: View {
 }
 
 struct VoiceSettings: View {
+    @EnvironmentObject private var pipelineVM: PipelineViewModel
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Voice Cloning", systemImage: "waveform")
                 .font(.headline)
 
-            Text("Fish Audio S2 Pro via MLX")
-                .font(.callout)
+            if let project = pipelineVM.project {
+                Text(project.voiceConfig.preferredProvider.displayName)
+                    .font(.callout)
+            } else {
+                Text("Non configuré")
+                    .font(.callout)
+            }
 
             Divider()
 

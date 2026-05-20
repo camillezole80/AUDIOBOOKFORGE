@@ -74,6 +74,120 @@ struct AudioSettingsView: View {
                     
                     Divider()
                     
+                    // Configuration TTS Audiobook Tool
+                    if localProvider == .ttsAudiobookTool {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Modèle TTS")
+                                .font(.headline)
+                            
+                            Picker("Modèle", selection: $voiceConfig.ttsModel) {
+                                ForEach(TtsModelType.allCases, id: \.self) { model in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(model.displayName)
+                                            .font(.body)
+                                        Text(model.description)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .tag(model)
+                                }
+                            }
+                            .pickerStyle(.radioGroup)
+                            
+                            Divider()
+                            
+                            Text("Options avancées")
+                                .font(.headline)
+                            
+                            Toggle("Validation STT (Whisper)", isOn: $voiceConfig.enableSttValidation)
+                                .help("Valide automatiquement les générations et réessaie en cas d'erreur")
+                            
+                            HStack {
+                                Text("Tentatives max:")
+                                Stepper("\(voiceConfig.maxRetries)", value: $voiceConfig.maxRetries, in: 1...10)
+                            }
+                            
+                            Toggle("Normalisation loudness (EBU R128)", isOn: $voiceConfig.enableNormalization)
+                                .help("Normalise le volume selon le standard EBU R128")
+                            
+                            Toggle("Upsampling 48kHz (Sidon)", isOn: $voiceConfig.enableUpsampling)
+                                .help("Améliore la qualité audio en upsamplant à 48kHz")
+                            
+                            Divider()
+                            
+                            Text("Paramètres de génération")
+                                .font(.headline)
+                            
+                            HStack {
+                                Text("Temperature:")
+                                Slider(value: $voiceConfig.temperature, in: 0.0...1.0, step: 0.1)
+                                Text(String(format: "%.1f", voiceConfig.temperature))
+                                    .frame(width: 30)
+                            }
+                            
+                            // Top-P (optionnel)
+                            HStack {
+                                Toggle("Top-P", isOn: Binding(
+                                    get: { voiceConfig.topP != nil },
+                                    set: { enabled in
+                                        voiceConfig.topP = enabled ? 0.9 : nil
+                                    }
+                                ))
+                                
+                                if voiceConfig.topP != nil {
+                                    Slider(value: Binding(
+                                        get: { voiceConfig.topP ?? 0.9 },
+                                        set: { voiceConfig.topP = $0 }
+                                    ), in: 0.0...1.0, step: 0.05)
+                                    Text(String(format: "%.2f", voiceConfig.topP ?? 0.9))
+                                        .frame(width: 40)
+                                }
+                            }
+                            
+                            // Top-K (optionnel)
+                            HStack {
+                                Toggle("Top-K", isOn: Binding(
+                                    get: { voiceConfig.topK != nil },
+                                    set: { enabled in
+                                        voiceConfig.topK = enabled ? 50 : nil
+                                    }
+                                ))
+                                
+                                if voiceConfig.topK != nil {
+                                    Stepper("\(voiceConfig.topK ?? 50)", value: Binding(
+                                        get: { voiceConfig.topK ?? 50 },
+                                        set: { voiceConfig.topK = $0 }
+                                    ), in: 1...100)
+                                }
+                            }
+                            
+                            // Seed (optionnel)
+                            HStack {
+                                Toggle("Seed fixe", isOn: Binding(
+                                    get: { voiceConfig.seed != nil },
+                                    set: { enabled in
+                                        voiceConfig.seed = enabled ? 42 : nil
+                                    }
+                                ))
+                                
+                                if voiceConfig.seed != nil {
+                                    TextField("Seed", value: Binding(
+                                        get: { voiceConfig.seed ?? 42 },
+                                        set: { voiceConfig.seed = $0 }
+                                    ), format: .number)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 100)
+                                }
+                            }
+                            .help("Utilisez un seed fixe pour des résultats reproductibles")
+                        }
+                        .padding()
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(8)
+                        
+                        Divider()
+                    }
+                    
                     // Clé API Fish.Audio
                     if localProvider.requiresAPIKey {
                         VStack(alignment: .leading, spacing: 12) {
@@ -165,6 +279,28 @@ struct AudioSettingsView: View {
                                 }
                             }
                             
+                            // Afficher l'ID sauvegardé dans le projet
+                            if let savedId = voiceConfig.selectedFishAudioVoice {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("ID sauvegardé dans le projet :")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                    Text(savedId)
+                                        .font(.caption)
+                                        .foregroundColor(savedId.count >= 3 ? .green : .red)
+                                        .textSelection(.enabled)
+                                    if savedId.count < 3 {
+                                        Text("⚠️ Cet ID semble invalide (trop court). Rechargez les voix et resélectionnez.")
+                                            .font(.caption)
+                                            .foregroundColor(.orange)
+                                    }
+                                }
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.secondary.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                            
                             if !availableVoices.isEmpty {
                                 // Barre de recherche
                                 TextField("🔍 Rechercher une voix...", text: $voiceSearchText)
@@ -216,6 +352,10 @@ struct AudioSettingsView: View {
                                                 .font(.caption)
                                                 .foregroundColor(.secondary)
                                         }
+                                        Text("ID : \(selectedVoice.id)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .textSelection(.enabled)
                                     }
                                     .padding(8)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -323,6 +463,12 @@ struct AudioSettingsView: View {
             localProvider = voiceConfig.preferredProvider
             localForceRemote = voiceConfig.forceRemote
             localFallbackToRemote = voiceConfig.fallbackToRemote
+            
+            // Charger la voix sélectionnée
+            if let savedVoiceId = voiceConfig.selectedFishAudioVoice {
+                selectedVoiceId = savedVoiceId
+                print("🔄 Chargement de la voix sauvegardée: \(savedVoiceId)")
+            }
         }
         .sheet(isPresented: $showCreateReferenceSheet) {
             CreateReferenceView(
@@ -347,6 +493,9 @@ struct AudioSettingsView: View {
         // Sauvegarder la voix sélectionnée
         if let voiceId = selectedVoiceId {
             voiceConfig.selectedFishAudioVoice = voiceId
+            print("💾 Sauvegarde de selectedFishAudioVoice: \(voiceId)")
+        } else {
+            print("⚠️ selectedVoiceId est nil, pas de sauvegarde")
         }
         
         // Sauvegarder la clé API dans le keychain
@@ -354,12 +503,26 @@ struct AudioSettingsView: View {
             _ = keychain.save(key: fishAudioKey, for: .fishAudio)
         }
         
-        // DEBUG
-        print("🔧 AudioSettings sauvegardés:")
-        print("  - preferredProvider: \(localProvider.rawValue)")
-        print("  - forceRemote: \(localForceRemote)")
-        print("  - fallbackToRemote: \(localFallbackToRemote)")
-        print("  - selectedVoice: \(selectedVoiceId ?? "none")")
+        // DEBUG DÉTAILLÉ
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🔧 AudioSettings.saveSettings() appelé")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("📝 Valeurs sauvegardées:")
+        print("  - preferredProvider: \(voiceConfig.preferredProvider.rawValue)")
+        print("  - forceRemote: \(voiceConfig.forceRemote)")
+        print("  - fallbackToRemote: \(voiceConfig.fallbackToRemote)")
+        print("  - selectedFishAudioVoice: \(voiceConfig.selectedFishAudioVoice ?? "nil")")
+        print("  - fishAudioReferenceId: \(voiceConfig.fishAudioReferenceId ?? "nil")")
+        print("  - ttsModel: \(voiceConfig.ttsModel.rawValue)")
+        print("")
+        print("📤 Envoi de la notification SaveProject...")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        
+        // IMPORTANT: Forcer la sauvegarde du projet
+        // Le binding voiceConfig est modifié, mais le projet doit être sauvegardé explicitement
+        NotificationCenter.default.post(name: NSNotification.Name("SaveProject"), object: nil)
+        
+        print("✅ Notification SaveProject envoyée")
     }
     
     private func testConnection() {
@@ -542,6 +705,8 @@ struct AudioProviderRow: View {
             return "Génération locale via MLX (gratuit, nécessite un Mac avec GPU)"
         case .fishAudio:
             return "API Fish.Audio ($15/1M bytes, rapide, qualité constante)"
+        case .ttsAudiobookTool:
+            return "TTS Audiobook Tool (gratuit, local, 3 modèles disponibles)"
         }
     }
 }
