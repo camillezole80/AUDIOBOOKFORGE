@@ -22,10 +22,32 @@ struct GenerationStepView: View {
             }
 
             if let project = pipelineVM.project {
+                // Bandeau de synthèse (vert/orange/gris) selon l'état global
+                ChapterSummaryBanner(chapters: project.chapters, isProcessing: pipelineVM.isProcessing)
+
                 // Liste des chapitres avec leur statut
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Progression par chapitre")
-                        .font(.headline)
+                    HStack {
+                        Text("Progression par chapitre")
+                            .font(.headline)
+                        Spacer()
+                        // Bouton "Réessayer les chapitres en erreur" si pertinent
+                        let errorCount = project.chapters.filter { $0.status == .error }.count
+                        if errorCount > 0 && !pipelineVM.isProcessing {
+                            Button(action: {
+                                Task { await pipelineVM.generateAudio() }
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.clockwise")
+                                    Text("Réessayer (\(errorCount))")
+                                }
+                                .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help("Relancer la génération uniquement sur les chapitres en erreur")
+                        }
+                    }
 
                     ScrollView {
                         VStack(spacing: 4) {
@@ -245,5 +267,75 @@ struct StatusBadge: View {
         case .audioReady: return .green
         case .error: return .red
         }
+    }
+}
+
+// MARK: - Bandeau de synthèse
+
+/// Bandeau au-dessus de la liste : vert si tout est OK, orange si erreurs partielles,
+/// gris sinon. Évite que l'utilisateur reste sur l'impression "rouge = échec" alors
+/// que les autres chapitres ont marché.
+struct ChapterSummaryBanner: View {
+    let chapters: [Chapter]
+    let isProcessing: Bool
+
+    var body: some View {
+        let total = chapters.count
+        let done = chapters.filter { $0.status == .audioReady }.count
+        let errors = chapters.filter { $0.status == .error }.count
+
+        if isProcessing {
+            banner(
+                color: .blue,
+                icon: "gearshape.2.fill",
+                title: "Génération en cours",
+                detail: "\(done)/\(total) chapitres terminés"
+            )
+        } else if total > 0 && done == total {
+            banner(
+                color: .green,
+                icon: "checkmark.seal.fill",
+                title: "Tous les chapitres sont générés",
+                detail: "\(done)/\(total) — prêt pour l'export"
+            )
+        } else if errors > 0 {
+            banner(
+                color: .orange,
+                icon: "exclamationmark.triangle.fill",
+                title: "Génération partielle",
+                detail: "\(done)/\(total) OK, \(errors) en erreur — cliquez sur Réessayer"
+            )
+        } else if done > 0 {
+            banner(
+                color: .gray,
+                icon: "ellipsis.circle.fill",
+                title: "Génération incomplète",
+                detail: "\(done)/\(total) chapitres terminés"
+            )
+        }
+    }
+
+    private func banner(color: Color, icon: String, title: String, detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+                .font(.title2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(color.opacity(0.1))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(color.opacity(0.4), lineWidth: 1)
+        )
+        .cornerRadius(8)
     }
 }

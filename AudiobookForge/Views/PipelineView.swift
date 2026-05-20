@@ -33,6 +33,13 @@ struct PipelineView: View {
                 .padding()
             }
         }
+        // Si l'utilisateur passe à un moteur qui ne lit pas les balises pendant qu'il est
+        // sur l'étape Balises (devenue masquée), on le redirige automatiquement.
+        .onChange(of: pipelineVM.project?.voiceConfig.engineSupportsTags ?? true) { _, supports in
+            if !supports && pipelineVM.currentStep == .tags {
+                pipelineVM.currentStep = .generation
+            }
+        }
         .alert("Erreur", isPresented: $pipelineVM.showError) {
             Button("OK", role: .cancel) {}
             Button("Copier") {
@@ -57,20 +64,21 @@ struct StepBarView: View {
     @EnvironmentObject private var pipelineVM: PipelineViewModel
 
     var body: some View {
+        // visibleSteps masque l'étape Balises si le moteur courant ne les lit pas.
+        // La barre passe donc dynamiquement de 5 à 4 cases.
+        let steps = pipelineVM.visibleSteps
+
         HStack(spacing: 0) {
-            ForEach(PipelineViewModel.PipelineStep.allCases, id: \.self) { step in
+            ForEach(Array(steps.enumerated()), id: \.element) { idx, step in
                 StepItemView(
                     step: step,
                     isActive: step == currentStep,
                     isCompleted: step.rawValue < currentStep.rawValue,
-                    isBlocked: false, // Navigation libre entre toutes les étapes
-                    action: {
-                        // Permettre la navigation libre entre toutes les étapes
-                        pipelineVM.currentStep = step
-                    }
+                    isBlocked: false,
+                    action: { pipelineVM.currentStep = step }
                 )
 
-                if step.rawValue < PipelineViewModel.PipelineStep.allCases.count - 1 {
+                if idx < steps.count - 1 {
                     Rectangle()
                         .fill(step.rawValue < currentStep.rawValue ? Color.green : Color.gray.opacity(0.3))
                         .frame(height: 2)

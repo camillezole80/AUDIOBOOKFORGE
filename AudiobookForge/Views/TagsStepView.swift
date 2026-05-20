@@ -1,25 +1,57 @@
 import SwiftUI
 
-/// Étape 2 : Injection et édition des balises émotionnelles
+/// Étape (conditionnelle) : Injection et édition des balises émotionnelles.
+/// N'apparaît dans le pipeline que si `voiceConfig.engineSupportsTags == true`.
 struct TagsStepView: View {
     @EnvironmentObject private var pipelineVM: PipelineViewModel
+    @State private var showAISettings = false
 
     var body: some View {
         VStack(spacing: 20) {
             // En-tête
-            VStack(spacing: 8) {
-                Image(systemName: "tag")
-                    .font(.system(size: 40))
-                    .foregroundColor(.accentColor)
-                Text("Balises émotionnelles")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                if let project = pipelineVM.project {
-                    Text("Enrichissement via \(project.aiConfig.preferredProvider.displayName)")
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("Enrichissement du texte")
-                        .foregroundColor(.secondary)
+            HStack(alignment: .top) {
+                VStack(spacing: 8) {
+                    Image(systemName: "tag")
+                        .font(.system(size: 40))
+                        .foregroundColor(.accentColor)
+                    Text("Balises émotionnelles")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    if let project = pipelineVM.project {
+                        HStack(spacing: 6) {
+                            Text("Enrichissement via \(project.aiConfig.preferredProvider.displayName)")
+                                .foregroundColor(.secondary)
+                            Button(action: { showAISettings = true }) {
+                                Image(systemName: "gearshape.fill")
+                                    .foregroundColor(.accentColor)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Changer le provider IA (Ollama / OpenAI / Anthropic / DeepSeek)")
+                        }
+                    } else {
+                        Text("Enrichissement du texte")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                // Raccourci visible "Sauter le balisage"
+                if pipelineVM.project != nil {
+                    VStack(spacing: 4) {
+                        Button(action: { pipelineVM.currentStep = .generation }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "forward.fill")
+                                Text("Sauter")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Aller directement à la génération sans baliser le texte")
+
+                        Text("Étape optionnelle")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 
@@ -127,12 +159,12 @@ struct TagsStepView: View {
                                 Text("\(taggedCount)/\(project.chapters.count) chapitre(s) enrichi(s)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                
+
                                 Button(action: {
-                                    pipelineVM.currentStep = .voice
+                                    pipelineVM.currentStep = .generation
                                 }) {
                                     HStack {
-                                        Text("Passer à la configuration vocale")
+                                        Text("Passer à la génération")
                                         Image(systemName: "arrow.right")
                                     }
                                     .frame(maxWidth: 250)
@@ -146,6 +178,19 @@ struct TagsStepView: View {
             }
         }
         .padding()
+        .sheet(isPresented: $showAISettings) {
+            // Sheet de config du provider IA : lit pipelineVM.project directement
+            // (cf. note dans VoiceStepView sur le piège du snapshot capturé).
+            AISettingsView(aiConfig: Binding(
+                get: { pipelineVM.project?.aiConfig ?? AIConfig() },
+                set: { newConfig in
+                    guard var project = pipelineVM.project else { return }
+                    project.aiConfig = newConfig
+                    ProjectManager.shared.updateProject(project)
+                    pipelineVM.project = project
+                }
+            ))
+        }
     }
 }
 

@@ -7,9 +7,7 @@ struct AudioSettingsView: View {
     
     // Utiliser @State local pour éviter les problèmes de binding
     @State private var localProvider: AudioProvider
-    @State private var localForceRemote: Bool
-    @State private var localFallbackToRemote: Bool
-    
+
     @State private var fishAudioKey: String = ""
     @State private var showFishAudioKey = false
     
@@ -27,16 +25,39 @@ struct AudioSettingsView: View {
     @State private var voiceSearchText: String = ""
     @State private var selectedLanguageFilter: String = "Toutes"
     @State private var selectedGenderFilter: String = "Tous"
+    @State private var includeOwnVoices: Bool = false
+    /// IDs des voix appartenant à l'utilisateur (récupérées via self=true)
+    @State private var ownVoiceIds: Set<String> = []
+    /// Lecteur d'extraits audio Fish.Audio (un seul à la fois).
+    @StateObject private var previewPlayer = VoicePreviewPlayer()
+    /// Code de langue ISO envoyé à l'API Fish.Audio (`""` = toutes les langues)
+    @State private var voiceLanguageCode: String
+
+    /// Langues proposées dans le Picker.
+    /// La paire (code, libellé) — `""` signifie "pas de filtre langue".
+    private let voiceLanguageOptions: [(code: String, label: String)] = [
+        ("",  "Toutes les langues"),
+        ("fr", "Français"),
+        ("en", "Anglais"),
+        ("es", "Espagnol"),
+        ("de", "Allemand"),
+        ("it", "Italien"),
+        ("pt", "Portugais"),
+        ("zh", "Chinois"),
+        ("ja", "Japonais"),
+        ("ko", "Coréen"),
+        ("ru", "Russe")
+    ]
     
     private let keychain = KeychainHelper.shared
     private let remoteAudio = RemoteAudioService.shared
     
-    init(voiceConfig: Binding<VoiceConfig>) {
+    init(voiceConfig: Binding<VoiceConfig>, defaultLanguage: String = "fr") {
         self._voiceConfig = voiceConfig
-        // Initialiser les @State avec les valeurs actuelles
         self._localProvider = State(initialValue: voiceConfig.wrappedValue.preferredProvider)
-        self._localForceRemote = State(initialValue: voiceConfig.wrappedValue.forceRemote)
-        self._localFallbackToRemote = State(initialValue: voiceConfig.wrappedValue.fallbackToRemote)
+        // Code ISO court, ex: "fr-FR" → "fr". Vide si l'appelant veut le top mondial.
+        let normalized = String(defaultLanguage.prefix(2)).lowercased()
+        self._voiceLanguageCode = State(initialValue: normalized)
     }
     
     var body: some View {
@@ -79,12 +100,21 @@ struct AudioSettingsView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Modèle TTS")
                                 .font(.headline)
-                            
+
                             Picker("Modèle", selection: $voiceConfig.ttsModel) {
                                 ForEach(TtsModelType.allCases, id: \.self) { model in
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(model.displayName)
-                                            .font(.body)
+                                        HStack(spacing: 6) {
+                                            Text(model.displayName)
+                                                .font(.body)
+                                            if model.supportsEmotionalTags {
+                                                Label("balises", systemImage: "tag.fill")
+                                                    .labelStyle(.iconOnly)
+                                                    .foregroundColor(.green)
+                                                    .font(.caption)
+                                                    .help("Lit les balises émotionnelles [whisper], [excited]…")
+                                            }
+                                        }
                                         Text(model.description)
                                             .font(.caption)
                                             .foregroundColor(.secondary)
@@ -93,6 +123,20 @@ struct AudioSettingsView: View {
                                 }
                             }
                             .pickerStyle(.radioGroup)
+
+                            // Avertissement si le modèle choisi ignore les balises
+                            if !voiceConfig.ttsModel.supportsEmotionalTags {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "info.circle")
+                                        .foregroundColor(.orange)
+                                    Text("Ce modèle ne lit pas les balises émotionnelles : elles seront supprimées du texte avant la génération.")
+                                        .font(.caption)
+                                        .foregroundColor(.orange)
+                                }
+                                .padding(8)
+                                .background(Color.orange.opacity(0.1))
+                                .cornerRadius(6)
+                            }
                             
                             Divider()
                             
@@ -239,33 +283,15 @@ struct AudioSettingsView: View {
                         Divider()
                     }
                     
-                    // Options
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Options")
-                            .font(.headline)
-                        
-                        Toggle("Forcer l'utilisation de l'API distante", isOn: $localForceRemote)
-                            .disabled(localProvider == .local)
-                        
-                        Toggle("Fallback automatique vers l'API si local échoue", isOn: $localFallbackToRemote)
-                            .disabled(localProvider == .fishAudio)
-                        
-                        Text("Si activé, l'app utilisera automatiquement Fish.Audio API si la génération locale échoue.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    Divider()
-                    
                     // Sélecteur de voix Fish.Audio
                     if localProvider == .fishAudio {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Text("Sélection de voix")
                                     .font(.headline)
-                                
+
                                 Spacer()
-                                
+
                                 if !fishAudioKey.isEmpty {
                                     Button(action: { loadVoices() }) {
                                         HStack {
@@ -276,6 +302,49 @@ struct AudioSettingsView: View {
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                                     .disabled(isLoadingVoices)
+                                }
+                            }
+
+                            // Filtre langue côté API : envoyé directement à GET /model?language=fr.
+                            // Sans ce filtre, l'API renvoie le top mondial (zh/en majoritaires),
+                            // ce qui donne 3-5 voix françaises sur 200.
+                            HStack(spacing: 8) {
+                                Image(systemName: "globe")
+                                    .foregroundColor(.secondary)
+                                Text("Langue à charger :")
+                                    .font(.subheadline)
+                                Picker("", selection: $voiceLanguageCode) {
+                                    ForEach(voiceLanguageOptions, id: \.code) { option in
+                                        Text(option.label).tag(option.code)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .labelsHidden()
+                                .onChange(of: voiceLanguageCode) { _, _ in
+                                    // Recharger si une liste est déjà affichée
+                                    if !availableVoices.isEmpty {
+                                        loadVoices()
+                                    }
+                                }
+                            }
+
+                            // Inclure les voix personnelles (clonées sur fish.audio)
+                            if !fishAudioKey.isEmpty {
+                                Toggle(isOn: $includeOwnVoices) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Inclure mes voix (clonage perso)")
+                                            .font(.subheadline)
+                                        Text("Charge aussi vos modèles créés sur fish.audio (badge ★).")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .toggleStyle(.checkbox)
+                                .onChange(of: includeOwnVoices) { _, _ in
+                                    // Recharger si une liste est déjà affichée
+                                    if !availableVoices.isEmpty {
+                                        loadVoices()
+                                    }
                                 }
                             }
                             
@@ -302,10 +371,32 @@ struct AudioSettingsView: View {
                             }
                             
                             if !availableVoices.isEmpty {
-                                // Barre de recherche
-                                TextField("🔍 Rechercher une voix...", text: $voiceSearchText)
-                                    .textFieldStyle(.roundedBorder)
-                                
+                                // Barre de recherche (plus visible avec icône système + clear + compteur)
+                                HStack(spacing: 8) {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundColor(.secondary)
+                                    TextField("Rechercher une voix par nom…", text: $voiceSearchText)
+                                        .textFieldStyle(.plain)
+                                    if !voiceSearchText.isEmpty {
+                                        Button(action: { voiceSearchText = "" }) {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    Text("\(filteredVoices.count) / \(availableVoices.count)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .monospacedDigit()
+                                }
+                                .padding(8)
+                                .background(Color(NSColor.textBackgroundColor))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                )
+                                .cornerRadius(6)
+
                                 // Filtres
                                 HStack {
                                     Picker("Langue", selection: $selectedLanguageFilter) {
@@ -315,7 +406,7 @@ struct AudioSettingsView: View {
                                         }
                                     }
                                     .pickerStyle(.menu)
-                                    
+
                                     Picker("Genre", selection: $selectedGenderFilter) {
                                         Text("Tous").tag("Tous")
                                         ForEach(uniqueGenders, id: \.self) { gender in
@@ -324,7 +415,7 @@ struct AudioSettingsView: View {
                                     }
                                     .pickerStyle(.menu)
                                 }
-                                
+
                                 // Liste des voix
                                 ScrollView {
                                     VStack(spacing: 8) {
@@ -332,6 +423,10 @@ struct AudioSettingsView: View {
                                             VoiceRow(
                                                 voice: voice,
                                                 isSelected: selectedVoiceId == voice.id,
+                                                isOwn: ownVoiceIds.contains(voice.id),
+                                                isPlaying: previewPlayer.playingVoiceId == voice.id,
+                                                isLoading: previewPlayer.loadingVoiceId == voice.id,
+                                                onPreviewToggle: { previewPlayer.toggle(voice: voice) },
                                                 action: { selectedVoiceId = voice.id }
                                             )
                                         }
@@ -372,38 +467,34 @@ struct AudioSettingsView: View {
                         Divider()
                     }
                     
-                    // Voix sauvegardée
-                    if localProvider == .fishAudio {
+                    // Voix sauvegardée (legacy) : on conserve l'affichage / la suppression
+                    // d'un reference_id déjà stocké, mais on retire le bouton "Créer" qui
+                    // reposait sur un endpoint Fish.Audio inexistant (POST /v1/references/add).
+                    if localProvider == .fishAudio, let refId = voiceConfig.fishAudioReferenceId {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Voix sauvegardée (optionnel)")
+                            Text("Voix sauvegardée (legacy)")
                                 .font(.headline)
-                            
-                            if let refId = voiceConfig.fishAudioReferenceId {
-                                HStack {
-                                    Text("ID : \(refId)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    
-                                    Spacer()
-                                    
-                                    Button("Supprimer") {
-                                        voiceConfig.fishAudioReferenceId = nil
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                }
-                            } else {
-                                Button("Créer une voix sauvegardée") {
-                                    showCreateReferenceSheet = true
+
+                            HStack {
+                                Text("ID : \(refId)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
+
+                                Spacer()
+
+                                Button("Supprimer") {
+                                    voiceConfig.fishAudioReferenceId = nil
                                 }
                                 .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
-                            
-                            Text("Sauvegarder votre voix sur Fish.Audio permet d'économiser de la bande passante (pas besoin d'envoyer l'audio de référence à chaque chunk).")
+
+                            Text("Pour utiliser votre propre voix, créez le modèle directement sur fish.audio puis sélectionnez-le dans la liste ci-dessus.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
-                        
+
                         Divider()
                     }
                     
@@ -442,6 +533,7 @@ struct AudioSettingsView: View {
             // Boutons d'action
             HStack {
                 Button("Annuler") {
+                    previewPlayer.stop()
                     dismiss()
                 }
                 .buttonStyle(.bordered)
@@ -449,6 +541,7 @@ struct AudioSettingsView: View {
                 Spacer()
                 
                 Button("Enregistrer") {
+                    previewPlayer.stop()
                     saveSettings()
                     dismiss()
                 }
@@ -457,13 +550,12 @@ struct AudioSettingsView: View {
             .padding()
         }
         .frame(width: 600, height: 700)
+        .onDisappear { previewPlayer.stop() }
         .onAppear {
             loadAPIKeys()
             // Recharger les valeurs depuis le binding au cas où elles auraient changé
             localProvider = voiceConfig.preferredProvider
-            localForceRemote = voiceConfig.forceRemote
-            localFallbackToRemote = voiceConfig.fallbackToRemote
-            
+
             // Charger la voix sélectionnée
             if let savedVoiceId = voiceConfig.selectedFishAudioVoice {
                 selectedVoiceId = savedVoiceId
@@ -485,44 +577,22 @@ struct AudioSettingsView: View {
     }
     
     private func saveSettings() {
-        // Sauvegarder les paramètres locaux dans le binding
-        voiceConfig.preferredProvider = localProvider
-        voiceConfig.forceRemote = localForceRemote
-        voiceConfig.fallbackToRemote = localFallbackToRemote
-        
-        // Sauvegarder la voix sélectionnée
+        // On regroupe TOUTES les mutations en un seul commit du binding.
+        var newConfig = voiceConfig
+        newConfig.preferredProvider = localProvider
         if let voiceId = selectedVoiceId {
-            voiceConfig.selectedFishAudioVoice = voiceId
-            print("💾 Sauvegarde de selectedFishAudioVoice: \(voiceId)")
-        } else {
-            print("⚠️ selectedVoiceId est nil, pas de sauvegarde")
+            newConfig.selectedFishAudioVoice = voiceId
         }
-        
-        // Sauvegarder la clé API dans le keychain
+        voiceConfig = newConfig
+
         if !fishAudioKey.isEmpty {
             _ = keychain.save(key: fishAudioKey, for: .fishAudio)
         }
-        
-        // DEBUG DÉTAILLÉ
-        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print("🔧 AudioSettings.saveSettings() appelé")
-        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print("📝 Valeurs sauvegardées:")
-        print("  - preferredProvider: \(voiceConfig.preferredProvider.rawValue)")
-        print("  - forceRemote: \(voiceConfig.forceRemote)")
-        print("  - fallbackToRemote: \(voiceConfig.fallbackToRemote)")
-        print("  - selectedFishAudioVoice: \(voiceConfig.selectedFishAudioVoice ?? "nil")")
-        print("  - fishAudioReferenceId: \(voiceConfig.fishAudioReferenceId ?? "nil")")
-        print("  - ttsModel: \(voiceConfig.ttsModel.rawValue)")
-        print("")
-        print("📤 Envoi de la notification SaveProject...")
-        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
-        // IMPORTANT: Forcer la sauvegarde du projet
-        // Le binding voiceConfig est modifié, mais le projet doit être sauvegardé explicitement
+
+        print("🔧 AudioSettings.saveSettings() : provider=\(voiceConfig.preferredProvider.rawValue), voice=\(voiceConfig.selectedFishAudioVoice ?? "nil"), ttsModel=\(voiceConfig.ttsModel.rawValue)")
+
+        // Filet de sécurité : forcer la persistance du projet
         NotificationCenter.default.post(name: NSNotification.Name("SaveProject"), object: nil)
-        
-        print("✅ Notification SaveProject envoyée")
     }
     
     private func testConnection() {
@@ -549,26 +619,44 @@ struct AudioSettingsView: View {
     
     private func loadVoices() {
         isLoadingVoices = true
-        
+
+        let languageFilter: String? = voiceLanguageCode.isEmpty ? nil : voiceLanguageCode
+
         Task {
             do {
-                print("🔍 Chargement des voix Fish.Audio...")
-                let voices = try await remoteAudio.fetchAvailableVoices(apiKey: fishAudioKey)
-                
+                print("🔍 Chargement des voix Fish.Audio (lang=\(languageFilter ?? "toutes"), perso=\(includeOwnVoices))...")
+                let voices = try await remoteAudio.fetchAvailableVoices(
+                    apiKey: fishAudioKey,
+                    language: languageFilter,
+                    includeOwn: includeOwnVoices
+                )
+
+                // Calcul des IDs "perso" : seulement si la toggle est cochée. On compare
+                // contre la liste publique de la MÊME langue pour rester cohérent.
+                var ownIds: Set<String> = []
+                if includeOwnVoices {
+                    let publicOnly = try await remoteAudio.fetchAvailableVoices(
+                        apiKey: fishAudioKey,
+                        language: languageFilter,
+                        includeOwn: false
+                    )
+                    let publicIds = Set(publicOnly.map { $0.id })
+                    ownIds = Set(voices.map { $0.id }).subtracting(publicIds)
+                }
+
                 await MainActor.run {
                     availableVoices = voices
+                    ownVoiceIds = ownIds
                     isLoadingVoices = false
-                    
-                    print("✅ \(voices.count) voix chargées")
-                    
-                    // Charger la voix sélectionnée si elle existe
+
+                    print("✅ \(voices.count) voix chargées (\(ownIds.count) perso)")
+
                     if let savedVoiceId = voiceConfig.selectedFishAudioVoice {
                         selectedVoiceId = savedVoiceId
                     }
-                    
-                    // Afficher un message si aucune voix n'est disponible
+
                     if voices.isEmpty {
-                        testResult = "⚠️ Aucune voix disponible"
+                        testResult = "⚠️ Aucune voix disponible pour cette langue"
                     }
                 }
             } catch {
@@ -610,41 +698,77 @@ struct AudioSettingsView: View {
 struct VoiceRow: View {
     let voice: FishAudioVoice
     let isSelected: Bool
+    let isOwn: Bool
+    let isPlaying: Bool
+    let isLoading: Bool
+    let onPreviewToggle: () -> Void
     let action: () -> Void
-    
+
+    private var hasPreview: Bool { voice.previewURL != nil }
+
     var body: some View {
         Button(action: action) {
             HStack {
+                // Mini-player Fish.Audio (à gauche, indépendant du clic de sélection)
+                Group {
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if hasPreview {
+                        Button(action: onPreviewToggle) {
+                            Image(systemName: isPlaying ? "stop.circle.fill" : "play.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(isPlaying ? .red : .accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isPlaying ? "Arrêter l'écoute" : "Écouter un extrait")
+                    } else {
+                        Image(systemName: "play.slash.fill")
+                            .font(.title2)
+                            .foregroundColor(.secondary.opacity(0.4))
+                            .help("Aucun extrait disponible")
+                    }
+                }
+                .frame(width: 28)
+
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(voice.name)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                    
+                    HStack(spacing: 6) {
+                        if isOwn {
+                            Image(systemName: "star.fill")
+                                .foregroundColor(.yellow)
+                                .font(.caption)
+                                .help("Voix personnelle (clonage)")
+                        }
+                        Text(voice.name)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+
                     HStack(spacing: 8) {
                         Text(voice.gender)
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        
+
                         Text("•")
                             .foregroundColor(.secondary)
-                        
+
                         Text(voice.language)
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        
+
                         if let style = voice.style {
                             Text("•")
                                 .foregroundColor(.secondary)
-                            
+
                             Text(style)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
                 }
-                
+
                 Spacer()
-                
+
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.accentColor)
@@ -701,12 +825,10 @@ struct AudioProviderRow: View {
     
     private var providerDescription: String {
         switch provider {
-        case .local:
-            return "Génération locale via MLX (gratuit, nécessite un Mac avec GPU)"
         case .fishAudio:
-            return "API Fish.Audio ($15/1M bytes, rapide, qualité constante)"
+            return "API Fish.Audio ($15/1M bytes, lit les balises émotionnelles, qualité constante)"
         case .ttsAudiobookTool:
-            return "TTS Audiobook Tool (gratuit, local, 3 modèles disponibles)"
+            return "TTS Audiobook Tool (gratuit, local — Fish S2-Pro / Chatterbox / Qwen3)"
         }
     }
 }

@@ -163,18 +163,31 @@ struct VoiceStepView: View {
                         Divider()
                             .padding(.vertical, 8)
                         
-                        // Bouton pour passer à l'étape suivante
+                        // Bouton pour passer à l'étape suivante :
+                        // - si le moteur lit les balises → étape Balises (optionnelle).
+                        // - sinon → directement Génération.
+                        let supportsTags = project.voiceConfig.engineSupportsTags
                         Button(action: {
-                            pipelineVM.currentStep = .generation
+                            pipelineVM.currentStep = supportsTags ? .tags : .generation
                         }) {
                             HStack {
-                                Text("Passer à la génération")
+                                Text(supportsTags ? "Passer aux balises (optionnel)" : "Passer à la génération")
                                 Image(systemName: "arrow.right")
                             }
-                            .frame(maxWidth: 250)
+                            .frame(maxWidth: 280)
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(!project.voiceConfig.hasValidReference)
+                        .help(project.voiceConfig.missingReferenceHint ?? "")
+
+                        // Raccourci : sauter à la génération même quand les balises sont disponibles
+                        if supportsTags && project.voiceConfig.hasValidReference {
+                            Button(action: { pipelineVM.currentStep = .generation }) {
+                                Text("Sauter le balisage et générer directement")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                 }
                 .frame(maxWidth: 500)
@@ -199,12 +212,16 @@ struct VoiceStepView: View {
             }
         }
         .sheet(isPresented: $showAudioSettings) {
-            if let project = pipelineVM.project {
-                AudioSettingsView(voiceConfig: Binding(
-                    get: { project.voiceConfig },
+            // IMPORTANT : on lit pipelineVM.project AU MOMENT du get, jamais une copie
+            // capturée. Sinon, chaque mutation via $voiceConfig.X (TTS options, etc.)
+            // partirait d'un snapshot périmé et écraserait les changements précédents.
+            AudioSettingsView(
+                voiceConfig: Binding(
+                    get: { pipelineVM.project?.voiceConfig ?? VoiceConfig() },
                     set: { pipelineVM.updateVoiceConfig($0) }
-                ))
-            }
+                ),
+                defaultLanguage: pipelineVM.project?.metadata.language ?? "fr"
+            )
         }
     }
     

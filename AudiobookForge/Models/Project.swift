@@ -104,6 +104,8 @@ struct VoiceConfig: Codable {
     
     // Configuration audio
     var preferredProvider: AudioProvider = .ttsAudiobookTool  // Par défaut: TTS Audiobook Tool
+    // ⚠️ Legacy : conservés pour la rétrocompat avec les anciens project.json
+    //    quand il existait un provider .local (MLX). Plus aucune logique ne les lit.
     var forceRemote: Bool = false
     var fallbackToRemote: Bool = true
     var fishAudioReferenceId: String? = nil  // ID de la voix sauvegardée sur Fish.Audio
@@ -119,17 +121,41 @@ struct VoiceConfig: Codable {
     var topK: Int? = nil
     var seed: Int? = nil
 
+    /// La configuration courante peut-elle générer de l'audio ?
+    /// - Fish.Audio : exige un model_id (voix publique sélectionnée OU référence legacy).
+    /// - TTS Audiobook Tool : exige sample local + transcription.
     var hasValidReference: Bool {
-        // Si Fish.Audio est configuré, pas besoin de référence locale
-        if preferredProvider == .fishAudio {
-            return true
-        }
-        // TTS Audiobook Tool nécessite une référence locale
-        if preferredProvider == .ttsAudiobookTool {
+        switch preferredProvider {
+        case .fishAudio:
+            let hasModelId = (selectedFishAudioVoice?.isEmpty == false)
+                          || (fishAudioReferenceId?.isEmpty == false)
+            return hasModelId
+        case .ttsAudiobookTool:
             return !referenceAudioPath.isEmpty && !referenceTranscription.isEmpty
         }
-        // Sinon, vérifier la référence locale
-        return !referenceAudioPath.isEmpty && !referenceTranscription.isEmpty
+    }
+
+    /// Message d'aide quand la config n'est pas prête pour générer.
+    var missingReferenceHint: String? {
+        guard !hasValidReference else { return nil }
+        switch preferredProvider {
+        case .fishAudio:
+            return "Sélectionnez une voix Fish.Audio dans les Réglages audio (icône 🔊)."
+        case .ttsAudiobookTool:
+            return "Importez un sample audio + sa transcription dans l'onglet Voix."
+        }
+    }
+
+    /// Le couple (provider, modèle) lit-il les balises émotionnelles ?
+    /// Si non, l'étape Balises est masquée dans le pipeline et les balises seraient
+    /// strippées de toute façon par `AudioGenerationService.textForEngine`.
+    var engineSupportsTags: Bool {
+        switch preferredProvider {
+        case .fishAudio:
+            return true  // s2-pro lit nativement
+        case .ttsAudiobookTool:
+            return ttsModel.supportsEmotionalTags
+        }
     }
 }
 
@@ -215,27 +241,36 @@ enum AIProvider: String, Codable, CaseIterable {
 // MARK: - Audio Configuration
 
 enum AudioProvider: String, Codable, CaseIterable {
-    case local = "local"
     case fishAudio = "fishAudio"
     case ttsAudiobookTool = "ttsAudiobookTool"
-    
+
     var displayName: String {
         switch self {
-        case .local: return "Local (MLX - Gratuit)"
-        case .fishAudio: return "Fish.Audio API"
+        case .fishAudio: return "Fish.Audio API (Cloud)"
         case .ttsAudiobookTool: return "TTS Audiobook Tool (Local)"
         }
     }
-    
+
     var requiresAPIKey: Bool {
         self == .fishAudio
     }
-    
+
     var costPer1MBytes: Double {
         switch self {
-        case .local: return 0.0
         case .fishAudio: return 15.0  // $15 per 1M bytes UTF-8
         case .ttsAudiobookTool: return 0.0
+        }
+    }
+
+    /// Le provider lit-il nativement les balises émotionnelles Fish-style
+    /// ([whisper], [excited], …) ? Si non, les balises doivent être strippées
+    /// avant l'envoi au moteur sous peine d'être prononcées comme du texte.
+    /// Pour TTS Audiobook Tool, la réponse dépend du modèle choisi
+    /// (`TtsModelType.supportsEmotionalTags`).
+    var supportsEmotionalTags: Bool {
+        switch self {
+        case .fishAudio: return true
+        case .ttsAudiobookTool: return false  // par défaut ; surchargé par le modèle
         }
     }
 }
@@ -246,7 +281,7 @@ enum TtsModelType: String, Codable, CaseIterable {
     case fishS2Pro = "fish-s2"
     case chatterbox = "chatterbox"
     case qwen3 = "qwen3"
-    
+
     var displayName: String {
         switch self {
         case .fishS2Pro: return "Fish S2-Pro (Haute qualité)"
@@ -254,7 +289,7 @@ enum TtsModelType: String, Codable, CaseIterable {
         case .qwen3: return "Qwen3-TTS (Rapide)"
         }
     }
-    
+
     var requiresVRAM: Int {
         switch self {
         case .fishS2Pro: return 24
@@ -262,12 +297,21 @@ enum TtsModelType: String, Codable, CaseIterable {
         case .qwen3: return 12
         }
     }
-    
+
     var description: String {
         switch self {
         case .fishS2Pro: return "Qualité maximale, 24GB VRAM requis"
         case .chatterbox: return "Multilingue, rapide, 8GB VRAM"
         case .qwen3: return "Batch processing, efficace, 12GB VRAM"
+        }
+    }
+
+    /// Seul Fish S2-Pro reconnaît les balises émotionnelles Fish-style.
+    /// Chatterbox et Qwen3 les liraient comme du texte → il faut les supprimer.
+    var supportsEmotionalTags: Bool {
+        switch self {
+        case .fishS2Pro: return true
+        case .chatterbox, .qwen3: return false
         }
     }
 }

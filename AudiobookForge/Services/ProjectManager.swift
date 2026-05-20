@@ -171,10 +171,8 @@ class ProjectManager: ObservableObject {
             try data.write(to: URL(fileURLWithPath: projectStatePath))
             logger.debug("✅ Project saved: \(project.name) (\(data.count) bytes)")
             
-            // Log des paramètres audio pour debug
             logger.debug("  - Audio provider: \(project.voiceConfig.preferredProvider.rawValue)")
-            logger.debug("  - Force remote: \(project.voiceConfig.forceRemote)")
-            logger.debug("  - Fallback to remote: \(project.voiceConfig.fallbackToRemote)")
+            logger.debug("  - TTS model: \(project.voiceConfig.ttsModel.rawValue)")
         } catch {
             logger.error("❌ Failed to write project file: \(error.localizedDescription)")
         }

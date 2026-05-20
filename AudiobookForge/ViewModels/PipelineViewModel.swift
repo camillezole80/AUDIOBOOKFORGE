@@ -81,17 +81,17 @@ class PipelineViewModel: ObservableObject {
     }
 
     enum PipelineStep: Int, CaseIterable {
-        case import_ = 0
-        case tags = 1
-        case voice = 2
+        case import_   = 0
+        case voice     = 1
+        case tags      = 2  // ⚠️ Étape conditionnelle : visible seulement si voiceConfig.engineSupportsTags
         case generation = 3
-        case export = 4
+        case export    = 4
 
         var title: String {
             switch self {
             case .import_: "Import"
-            case .tags: "Balises"
             case .voice: "Voix"
+            case .tags: "Balises"
             case .generation: "Génération"
             case .export: "Export"
             }
@@ -100,12 +100,21 @@ class PipelineViewModel: ObservableObject {
         var icon: String {
             switch self {
             case .import_: "doc.badge.plus"
-            case .tags: "tag"
             case .voice: "waveform"
+            case .tags: "tag"
             case .generation: "gearshape.2"
             case .export: "square.and.arrow.up"
             }
         }
+    }
+
+    /// Étapes effectivement affichées dans la barre, en tenant compte du moteur choisi.
+    /// L'étape Balises disparaît si le moteur courant ne lit pas les balises.
+    var visibleSteps: [PipelineStep] {
+        let supportsTags = project?.voiceConfig.engineSupportsTags ?? true
+        return supportsTags
+            ? PipelineStep.allCases
+            : PipelineStep.allCases.filter { $0 != .tags }
     }
 
     func loadProject(_ project: Project) {
@@ -116,12 +125,17 @@ class PipelineViewModel: ObservableObject {
     private func updateCurrentStep() {
         guard let project = project else { return }
 
+        // Nouveau flux : Import → Voix → Balises (cond.) → Génération → Export.
+        // Pour les projets legacy avec status .tagsInjected (créés sous l'ancien ordre),
+        // on garde leur taggedText et on les place sur Voix pour qu'ils confirment le moteur.
         switch project.status {
         case .imported:
             currentStep = .import_
         case .textExtracted:
-            currentStep = .tags
+            currentStep = .voice
         case .tagsInjected:
+            // Projet legacy : balises déjà injectées. On les conserve (migration 2.A).
+            // On envoie sur Voix car le moteur reste à confirmer.
             currentStep = .voice
         case .audioGenerated:
             currentStep = .export
@@ -175,7 +189,9 @@ class PipelineViewModel: ObservableObject {
 
             projectManager.updateProject(updatedProject)
             self.project = updatedProject
-            currentStep = .tags
+            // Nouveau flux : après l'import, on configure d'abord la voix
+            // (l'étape Balises est conditionnelle au moteur choisi).
+            currentStep = .voice
 
         } catch {
             errorMessage = error.localizedDescription
@@ -274,7 +290,8 @@ class PipelineViewModel: ObservableObject {
                 project.status = .tagsInjected
                 projectManager.updateProject(project)
                 self.project = project
-                currentStep = .voice
+                // Nouveau flux : après balisage, on va à la Génération (Voix a déjà été configurée).
+                currentStep = .generation
                 progressText = "Enrichissement terminé ! ✓"
             } else {
                 let taggedCount = project.chapters.filter { $0.status == .tagged }.count
@@ -350,49 +367,15 @@ class PipelineViewModel: ObservableObject {
 
         project.voiceConfig.referenceAudioPath = audioPath
         project.voiceConfig.referenceTranscription = transcription
-        
-        // NOTE: Création automatique de référence Fish.Audio désactivée
-        // L'endpoint /v1/references/add n'existe pas dans l'API Fish.Audio
-        // Utiliser les voix prédéfinies ("john", "emma", "marie", "pierre", etc.)
-        
+
+        // Note Fish.Audio : on n'auto-crée plus de référence ici. L'API publique JSON
+        // ne supporte pas POST /v1/references/add (404). Pour utiliser Fish.Audio,
+        // l'utilisateur sélectionne un modèle public via Réglages audio → Charger
+        // les voix (GET /model). L'audio local sert uniquement aux providers locaux
+        // (MLX, TTS Audiobook Tool).
+
         projectManager.updateProject(project)
         self.project = project
-    }
-    
-    /// Crée une référence sauvegardée sur Fish.Audio
-    private func createFishAudioReference(audioPath: String, transcription: String) async {
-        guard var project = project else { return }
-        guard let apiKey = keychain.get(for: .fishAudio) else {
-            print("⚠️ Clé API Fish.Audio manquante")
-            return
-        }
-        
-        do {
-            // Charger l'audio
-            let audioData = try Data(contentsOf: URL(fileURLWithPath: audioPath))
-            
-            // Générer un ID unique pour cette référence
-            let referenceId = "ref_\(project.id.uuidString)"
-            
-            print("📤 Création de la référence Fish.Audio: \(referenceId)")
-            
-            // Créer la référence sur Fish.Audio
-            try await RemoteAudioService.shared.createReference(
-                id: referenceId,
-                audio: audioData,
-                text: transcription,
-                apiKey: apiKey
-            )
-            
-            // Sauvegarder le reference_id dans le projet
-            project.voiceConfig.fishAudioReferenceId = referenceId
-            projectManager.updateProject(project)
-            self.project = project
-            
-            print("✅ Référence Fish.Audio créée avec succès: \(referenceId)")
-        } catch {
-            print("❌ Erreur lors de la création de la référence Fish.Audio: \(error.localizedDescription)")
-        }
     }
 
     func updateVoiceSpeed(_ speed: Double) {
@@ -411,23 +394,15 @@ class PipelineViewModel: ObservableObject {
     
     func updateVoiceConfig(_ config: VoiceConfig) {
         guard var project = project else {
-            print("⚠️ updateVoiceConfig: No project loaded")
+            print("⚠️ updateVoiceConfig: aucun projet chargé")
             return
         }
-        
-        print("🔧 updateVoiceConfig called:")
-        print("  - Project: \(project.name)")
-        print("  - preferredProvider: \(config.preferredProvider.rawValue)")
-        print("  - forceRemote: \(config.forceRemote)")
-        print("  - fallbackToRemote: \(config.fallbackToRemote)")
-        print("  - selectedVoice: \(config.selectedFishAudioVoice ?? "none")")
-        print("  - hasValidReference: \(config.hasValidReference)")
-        
+
+        print("🔧 updateVoiceConfig : provider=\(config.preferredProvider.rawValue), voice=\(config.selectedFishAudioVoice ?? "—"), ttsModel=\(config.ttsModel.rawValue), valid=\(config.hasValidReference)")
+
         project.voiceConfig = config
         projectManager.updateProject(project)
         self.project = project
-        
-        print("✅ VoiceConfig updated and saved to disk")
     }
 
     func generateVoicePreview() async {
@@ -459,8 +434,25 @@ class PipelineViewModel: ObservableObject {
     // MARK: - Étape 4: Génération audio
 
     func generateAudio() async {
-        guard let project = project,
-              project.voiceConfig.hasValidReference else { return }
+        guard let project = project else { return }
+
+        // Validation pré-vol : on refuse de démarrer la boucle si la config est incomplète.
+        // Sinon on génère 100 chunks qui échouent tous avec la même erreur, et l'utilisateur
+        // voit un "Aucun chunk valide" générique au lieu de la vraie cause.
+        guard project.voiceConfig.hasValidReference else {
+            errorMessage = project.voiceConfig.missingReferenceHint
+                ?? "Configuration audio incomplète. Vérifiez l'onglet Voix."
+            showError = true
+            return
+        }
+
+        // Validation supplémentaire pour Fish.Audio : la clé API doit être dans le Keychain
+        if project.voiceConfig.preferredProvider == .fishAudio,
+           keychain.get(for: AudioProvider.fishAudio) == nil {
+            errorMessage = "Clé API Fish.Audio manquante. Ouvrez les Réglages audio (icône 🔊) pour la saisir."
+            showError = true
+            return
+        }
 
         isProcessing = true
         isPaused = false
@@ -478,15 +470,24 @@ class PipelineViewModel: ObservableObject {
 
         var updatedProject = project
 
+        // Reset des chapitres .error avant la boucle : on les remet dans leur état
+        // pré-génération (textReady ou tagged selon qu'ils ont du taggedText).
+        // Sans ça, l'UI conserverait le badge rouge "Erreur" pendant toute la durée
+        // de la régénération, faisant croire à un nouvel échec.
+        for i in updatedProject.chapters.indices where updatedProject.chapters[i].status == .error {
+            updatedProject.chapters[i].status = updatedProject.chapters[i].taggedText != nil ? .tagged : .textReady
+        }
+        self.project = updatedProject  // refresh UI immédiat
+
         for (chapterIndex, chapter) in updatedProject.chapters.enumerated() {
             guard !isPaused else { break }
-            
+
             // Ignorer les chapitres déjà générés
             if chapter.status == .audioReady && chapter.audioFilePath != nil {
                 progressText = "Chapitre \(chapterIndex + 1) déjà généré (reprise)"
                 continue
             }
-            
+
             // Vérifier qu'il y a du texte (balisé ou brut)
             let textToGenerate = chapter.taggedText ?? chapter.rawText
             if textToGenerate.isEmpty {
@@ -507,30 +508,54 @@ class PipelineViewModel: ObservableObject {
                     }
                 )
 
-                // Normaliser
-                try await audioService.normalizeAudio(filePath: chapterAudioPath)
+                // Normalisation : si elle échoue, on garde l'audio non normalisé
+                // (le swap atomique de normalizeAudio garantit que l'original reste valide).
+                do {
+                    try await audioService.normalizeAudio(filePath: chapterAudioPath)
+                } catch {
+                    Logger.shared.warning("Normalisation échouée pour chapitre \(chapterIndex + 1) : \(error.localizedDescription). Audio conservé non normalisé.")
+                }
 
                 updatedProject.chapters[chapterIndex].audioFilePath = chapterAudioPath
                 updatedProject.chapters[chapterIndex].status = .audioReady
 
-                // Nettoyer les chunks pour économiser l'espace disque
-                // (garde les chunks en mode debug si nécessaire)
-                chunkCleaner.cleanAllChunks(in: updatedProject.projectDirectory, keepChunks: false)
+                // Nettoyage ciblé : uniquement les chunks de CE chapitre.
+                chunkCleaner.cleanChunksForChapter(
+                    in: updatedProject.projectDirectory,
+                    chapterIndex: chapter.index,
+                    keepChunks: false
+                )
 
-                // Sauvegarder la progression
+                // Persistance + refresh UI immédiats après chaque chapitre
                 projectManager.updateProject(updatedProject)
+                self.project = updatedProject
 
             } catch {
                 updatedProject.chapters[chapterIndex].status = .error
-                errorMessage = "Erreur chapitre \(chapterIndex + 1): \(error.localizedDescription)"
+                updatedProject.chapters[chapterIndex].audioFilePath = nil
+                errorMessage = "Erreur chapitre \(chapterIndex + 1) : \(error.localizedDescription)"
                 showError = true
+                // IMPORTANT : persister + refresh même en cas d'erreur, sinon la
+                // reprise au prochain lancement ne saura pas que ce chapitre a échoué
+                // (Trou #3 de l'audit).
+                projectManager.updateProject(updatedProject)
+                self.project = updatedProject
             }
         }
 
         if !isPaused {
-            updatedProject.status = .audioGenerated
-            progress = 1.0
-            progressText = "Génération terminée !"
+            let errorChapters = updatedProject.chapters.filter { $0.status == .error }.count
+            let allOK = errorChapters == 0
+                && updatedProject.chapters.allSatisfy { $0.status == .audioReady || $0.rawText.isEmpty }
+
+            if allOK {
+                updatedProject.status = .audioGenerated
+                progress = 1.0
+                progressText = "Génération terminée ✓"
+                errorMessage = nil  // efface toute trace d'erreur passée
+            } else if errorChapters > 0 {
+                progressText = "Génération partielle : \(errorChapters) chapitre(s) en erreur"
+            }
         }
 
         projectManager.updateProject(updatedProject)
@@ -581,21 +606,30 @@ class PipelineViewModel: ObservableObject {
                 }
             )
             
-            // Normaliser
-            try await audioService.normalizeAudio(filePath: chapterAudioPath)
-            
+            // Normalisation : si elle échoue on garde l'audio non normalisé
+            do {
+                try await audioService.normalizeAudio(filePath: chapterAudioPath)
+            } catch {
+                Logger.shared.warning("Normalisation échouée pour chapitre \(index + 1) : \(error.localizedDescription). Audio conservé non normalisé.")
+            }
+
             updatedProject.chapters[index].audioFilePath = chapterAudioPath
             updatedProject.chapters[index].status = .audioReady
-            
-            // Nettoyer les chunks
-            chunkCleaner.cleanAllChunks(in: updatedProject.projectDirectory, keepChunks: false)
-            
+
+            // Nettoyage ciblé (uniquement les chunks de ce chapitre)
+            chunkCleaner.cleanChunksForChapter(
+                in: updatedProject.projectDirectory,
+                chapterIndex: chapter.index,
+                keepChunks: false
+            )
+
             // Sauvegarder
             projectManager.updateProject(updatedProject)
             self.project = updatedProject
-            
+
             progress = 1.0
             progressText = "Chapitre \(index + 1) généré ✓"
+            errorMessage = nil  // efface une éventuelle erreur précédente sur ce chapitre
             
         } catch {
             updatedProject.chapters[index].status = .error

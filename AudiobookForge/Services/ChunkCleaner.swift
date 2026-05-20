@@ -36,6 +36,33 @@ class ChunkCleaner {
         logger.info("Chunk cleanup complete: deleted=\(deletedCount), failed=\(failedCount)")
     }
     
+    /// Nettoie les chunks d'UN chapitre précis (préfixe `chunk_<chapterIndex>_`).
+    /// Beaucoup plus sûr que `cleanAllChunks` pendant une génération multi-chapitres
+    /// car ça ne touche pas aux chunks en cours/à venir d'autres chapitres.
+    func cleanChunksForChapter(in projectDir: String, chapterIndex: Int, keepChunks: Bool = false) {
+        guard !keepChunks else {
+            logger.debug("Keeping chunks for debugging (chapter \(chapterIndex))")
+            return
+        }
+
+        let chunksDir = "\(projectDir)/audio/chunks"
+        guard FileManager.default.fileExists(atPath: chunksDir) else { return }
+
+        let prefix = "chunk_\(chapterIndex)_"
+        do {
+            let files = try FileManager.default.contentsOfDirectory(atPath: chunksDir)
+            var deleted = 0
+            for file in files where file.hasPrefix(prefix) && file.hasSuffix(".wav") {
+                let path = "\(chunksDir)/\(file)"
+                try? FileManager.default.removeItem(atPath: path)
+                deleted += 1
+            }
+            logger.info("Chunks nettoyés pour chapitre \(chapterIndex) : \(deleted) fichiers")
+        } catch {
+            logger.error(error, context: "Failed to clean chunks for chapter \(chapterIndex)")
+        }
+    }
+
     /// Nettoie tous les chunks d'un projet
     /// - Parameters:
     ///   - projectDir: Dossier du projet
