@@ -24,6 +24,12 @@ class ProjectListViewModel: ObservableObject {
         isImporting = true
         importError = nil
 
+        // Indispensable sous macOS pour accéder à un fichier via NSOpenPanel
+        let hasAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasAccess { url.stopAccessingSecurityScopedResource() }
+        }
+
         let fileType: FileType
         switch url.pathExtension.lowercased() {
         case "epub":

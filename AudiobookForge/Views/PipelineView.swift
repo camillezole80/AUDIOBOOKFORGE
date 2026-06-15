@@ -33,10 +33,8 @@ struct PipelineView: View {
                 .padding()
             }
         }
-        // Si l'utilisateur passe à un moteur qui ne lit pas les balises pendant qu'il est
-        // sur l'étape Balises (devenue masquée), on le redirige automatiquement.
-        .onChange(of: pipelineVM.project?.voiceConfig.engineSupportsTags ?? true) { _, supports in
-            if !supports && pipelineVM.currentStep == .tags {
+        .onChange(of: pipelineVM.project?.aiConfig.taggingMode ?? .fishS2) { _, mode in
+            if mode == .none && pipelineVM.currentStep == .tags {
                 pipelineVM.currentStep = .generation
             }
         }

@@ -1,0 +1,168 @@
+import os
+import random
+import huggingface_hub
+from indextts.infer_v2 import IndexTTS2 # type: ignore
+from numpy import ndarray
+import numpy
+
+from tts_audiobook_tool.app_types import Sound, StreamChunkCallback, StreamEndCallback
+from tts_audiobook_tool.app_util import AppUtil
+from tts_audiobook_tool.constants import *
+from tts_audiobook_tool.project import Project
+from tts_audiobook_tool.tts_model.indextts2_base_model import IndexTts2BaseModel
+from tts_audiobook_tool.util import *
+
+
+class IndexTts2Model(IndexTts2BaseModel):
+    """
+    """
+
+    def __init__(self, use_fp16: bool):
+
+        # Download model to default cache location
+        model_dir = huggingface_hub.snapshot_download(
+            repo_id=REPO_ID,
+            cache_dir=huggingface_hub.constants.HF_HUB_CACHE,
+            local_files_only=False
+        )
+        cfg_path = os.path.join(model_dir, "config.yaml")
+
+        # FYI, "use_cuda_kernel=True" made zero speed difference for me on two different systems,
+        # so not bothering to make it a configurable option
+
+        # FYI, "use_deepspeed=True" also had no positive impact
+        # (native Windows, 3080Ti, deepspeed wheel, though using fp16 fwiw)
+
+        self.model: IndexTTS2 | None = IndexTTS2(
+            cfg_path=cfg_path,
+            model_dir=model_dir,
+            use_fp16=use_fp16,
+            device=None, # let model auto-detect device
+            use_cuda_kernel=False,
+            use_deepspeed=False
+        )
+
+
+    def kill(self) -> None:
+        self.model = None
+
+    def generate_using_project(
+            self,
+            project: Project,
+            prompts: list[str],
+            force_random_seed: bool=False,
+            on_stream_chunk: StreamChunkCallback | None = None,
+            on_stream_end: StreamEndCallback | None = None,
+        ) -> list[Sound] | str:
+        
+        if len(prompts) != 1:
+            raise ValueError("Implementation does not support batching")
+        prompt = prompts[0]
+
+        if project.indextts2_voice_file_name:
+            voice_path = os.path.join(project.dir_path, project.indextts2_voice_file_name)
+        else:
+            voice_path = ""
+
+        if project.indextts2_emo_voice_file_name:
+            emo_voice_path = os.path.join(project.dir_path, project.indextts2_emo_voice_file_name)
+        else:
+            emo_voice_path = ""
+
+        seed = -1 if force_random_seed else project.indextts2_seed
+
+        result = self.generate(
+            text=prompt,
+            voice_path=voice_path,
+            temperature=project.indextts2_temperature,
+            emo_alpha=project.indextts2_emo_alpha,
+            emo_voice_path=emo_voice_path,
+            emo_vector=project.indextts2_emo_vector,
+            top_p=project.indextts2_top_p,
+            top_k=project.indextts2_top_k,
+            seed=seed
+        )
+
+        if isinstance(result, Sound):
+            return [result]
+        else:
+            return result
+
+    def generate(
+            self,
+            text: str,
+            voice_path: str,
+            temperature: float,
+            emo_alpha: float,
+            emo_voice_path: str,
+            emo_vector: list[float],
+            top_p: float = -1,
+            top_k: int = -1,
+            seed: int = -1
+    ) -> Sound | str:
+        """
+        Returns generated audio or error string
+        """
+
+        if not self.model:
+            return "Model is not initialized"
+
+        if temperature == -1:
+            temperature = IndexTts2BaseModel.DEFAULT_TEMPERATURE
+        if emo_alpha == -1:
+            emo_alpha = IndexTts2BaseModel.DEFAULT_EMO_VOICE_ALPHA
+        if top_p == -1:
+            top_p = IndexTts2BaseModel.DEFAULT_TOP_P
+        if top_k == -1:
+            top_k = IndexTts2BaseModel.DEFAULT_TOP_K
+        if emo_vector and len(emo_vector) != 8:
+            return "emo_vector should be either empty or have length of 8"
+
+        if seed == -1:
+            seed = random.randrange(0, SEED_MAX)
+        AppUtil.set_seed(seed)
+
+        try:
+            # FYI, infer() caches loaded voice sample/s internally
+            result = self.model.infer(
+                spk_audio_prompt=voice_path,
+                text=text,
+                temperature=temperature,
+                emo_alpha=emo_alpha,
+                emo_audio_prompt=emo_voice_path or None,
+                emo_vector=emo_vector or None,
+                top_p=top_p,
+                top_k=top_k,
+                max_text_tokens_per_segment=MAX_TOKENS_PER_SEGMENT,
+                output_path=None,
+                verbose=False
+            )
+        except Exception as e:
+            return make_error_string(e)
+
+        if not result:
+            return "Model did not return any data"
+        if len(result) != 2:
+            return f"Model returned unexpected data format: {type(result)}"
+
+        sample_rate = result[0]
+        if not isinstance(sample_rate, int) or sample_rate <= 0:
+            return f"Model returned unexpected samplerate value: {sample_rate}"
+
+        data: ndarray = result[1] # looks like: array([[-1], [-2], [-1], etc], dtype=int16)
+        data = data.flatten()
+        if len(data) == 0:
+            return f"Model returned empty array"
+        # Convert from int16's to floats
+        data = data.astype(numpy.float32) / 32768.0
+
+        return Sound(data, sample_rate)
+
+
+REPO_ID = "IndexTeam/IndexTTS-2"
+
+# Upper bound of recommended range as per project gradio demo
+# App ofc always segments the text well within this range but yea
+# FYI, WER is outstanding when limited to app's default word limit (40),
+# but increasingly starts dropping phrases as num tokens increases.
+MAX_TOKENS_PER_SEGMENT = 200

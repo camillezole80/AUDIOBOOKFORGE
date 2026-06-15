@@ -1,0 +1,217 @@
+from tts_audiobook_tool.ask_util import AskUtil
+from tts_audiobook_tool.menu_util import MenuItem, MenuUtil
+from tts_audiobook_tool.project import Project
+from tts_audiobook_tool.state import State
+from tts_audiobook_tool.tts import Tts
+from tts_audiobook_tool.tts_model.vibevoice_base_model import VibeVoiceBaseModel
+from tts_audiobook_tool.tts_model.tts_model_info import TtsModelInfos
+from tts_audiobook_tool.util import *
+from tts_audiobook_tool.constants import *
+from tts_audiobook_tool.voice_menu import VoiceMenuShared
+
+class VoiceVibeVoiceMenu:
+
+    @staticmethod
+    def menu(state: State) -> None:
+
+        project = state.project
+
+        def make_select_voice_label(_: State) -> str: # custom
+            if not state.project.has_voice:
+                if state.project.vibevoice_lora_target:
+                    col = COL_ACCENT
+                else:
+                    col = COL_ERROR
+                currently = make_currently_string("none", color_code=col)
+            else:
+                currently = make_currently_string(state.project.voice_label)
+            return f"Select voice clone sample {currently}"
+
+        def make_model_target_label(_) -> str:
+            value = project.vibevoice_target or VibeVoiceBaseModel.DEFAULT_REPO_ID
+            label = make_currently_string(value, default=VibeVoiceBaseModel.DEFAULT_REPO_ID)
+            return f"Select model {label}"
+
+        def make_lora_target_label(_) -> str:
+            if project.vibevoice_lora_target:
+                value = ellipsize_path_for_menu(project.vibevoice_lora_target)
+                label = make_currently_string(value)
+            else:
+                label = f"{COL_DIM}(optional)"
+            return f"Select LoRA {label}"
+
+        def make_items(_: State) -> list[MenuItem]:
+
+            items = []
+
+            # Voice
+            items.append(
+                MenuItem(
+                    make_select_voice_label,
+                    lambda _, __: VoiceMenuShared.ask_and_set_voice_file(state, TtsModelInfos.VIBEVOICE)
+                )
+            )
+            if state.project.vibevoice_voice_file_name:
+                items.append( 
+                    VoiceMenuShared.make_clear_voice_item(state, TtsModelInfos.VIBEVOICE) 
+                )
+            
+            # LoRA
+            items.append(
+                MenuItem(make_lora_target_label, lambda _, __: ask_lora_target(state.project))
+            )
+            if state.project.vibevoice_lora_target:
+                items.append(MenuItem("Clear LoRA", on_clear_lora))
+
+            # Model
+            items.append(
+                MenuItem(make_model_target_label, lambda _, __: target_submenu(state))
+            )
+            if state.project.vibevoice_target:
+                items.append(
+                    MenuItem("Clear custom model", lambda _, __: clear_custom_model(state.project))
+                )
+
+            # Other config
+            item = MenuUtil.make_number_item(
+                state=state,
+                attr="vibevoice_cfg",
+                base_label="CFG", 
+                default_value=VibeVoiceBaseModel.CFG_DEFAULT,
+                is_minus_one_default=True,
+                num_decimals=2,
+                prompt=f"Enter CFG {COL_DIM}({VibeVoiceBaseModel.CFG_MIN} to {VibeVoiceBaseModel.CFG_MAX}):",
+                min_value=VibeVoiceBaseModel.CFG_MIN,
+                max_value=VibeVoiceBaseModel.CFG_MAX
+            )
+            item.superlabel = VOICE_ADVANCED_SUPERLABEL
+            items.append(item)
+
+            items.append(
+                MenuUtil.make_number_item(
+                    state=state,
+                    attr="vibevoice_steps",
+                    base_label="Steps", 
+                    default_value=VibeVoiceBaseModel.DEFAULT_NUM_STEPS,
+                    is_minus_one_default=True,
+                    num_decimals=0,
+                    prompt=f"Enter num steps {COL_DIM}(1-30){COL_DEFAULT}:",
+                    min_value=1,
+                    max_value=30
+                )
+            )
+            
+            items.append(
+                VoiceMenuShared.make_seed_item(state, "vibevoice_seed")
+            )
+            return items
+        
+        VoiceMenuShared.menu_wrapper(state, make_items)
+
+# ---
+
+def target_submenu(state: State) -> None:
+
+    def make_preset_label(target: str) -> str:
+        label = target
+        if target == VibeVoiceBaseModel.DEFAULT_REPO_ID:
+            label += f" {COL_DIM}(default)"
+        if target == state.project.vibevoice_target:
+            label += f" {COL_ACCENT}(selected)"
+        return label
+
+    items = []
+    for t in VibeVoiceBaseModel.PRESET_REPO_IDS:
+        items.append(MenuItem(make_preset_label(t), lambda _, __, t=t: apply_model_and_validate(state.project, t)))
+    items.append(MenuItem("Enter hf repo id or local path manually", lambda _, __: ask_model_target(state.project)))
+    MenuUtil.menu(
+        state=state,
+        heading="Select VibeVoice model",
+        items=items,
+        one_shot=True
+    )
+
+def ask_model_target(project: Project) -> None: 
+
+    model_name = Tts.get_type().value.ui["short_name"]
+    prompt = f"Enter huggingface repo id or local directory path to {model_name} model"
+    prompt += f"\n{COL_DIM}Eg, \"vibevoice/VibeVoice-7B\"; \"/path/to/checkpoint\""
+    if project.vibevoice_target:
+        prompt += f"\n{COL_DIM}(currently: {project.vibevoice_target})"    
+
+    VoiceMenuShared.ask_target(
+        project=project,
+        prompt=prompt,
+        current_target=project.vibevoice_target, 
+        callback=apply_model_and_validate
+    )
+
+def apply_model_and_validate(project: Project, target: str) -> None: 
+
+    project.vibevoice_target = target
+    project.save()
+    Tts.set_model_params_using_project(project)
+    Tts.clear_tts_model() # for good measure
+    try:
+        _ = Tts.get_vibevoice()
+    except (OSError, Exception) as e:
+        # Revert
+        project.vibevoice_target = ""
+        project.save()
+        Tts.set_model_params_using_project(project)
+        AskUtil.ask_error(f"\n{make_error_string(e)}")
+        return
+
+    print_feedback("\nCustom model set:", target)
+
+def clear_custom_model(project: Project) -> None:
+    project.vibevoice_target = ""
+    project.save()
+    Tts.set_model_params_using_project(project)
+    Tts.clear_tts_model()
+    print_feedback("Cleared, will use default model")
+
+def ask_lora_target(project: Project) -> None: 
+    
+    prompt = f"Enter huggingface repo id or local directory path to VibeVoice LoRA"
+    prompt += f"\n{COL_DIM}Eg, \"vibevoice-community/klett\", \"/path/to/checkpoint\""
+    if project.vibevoice_lora_target:
+        prompt += f"\n{COL_DIM}(Currently: {project.vibevoice_lora_target})"
+
+    VoiceMenuShared.ask_target(
+        project=project,
+        prompt=prompt,
+        current_target=project.vibevoice_lora_target, 
+        callback=apply_lora_and_validate
+    )
+
+def apply_lora_and_validate(project: Project, target: str) -> None: 
+
+    def revert() -> None:
+        project.vibevoice_lora_target = ""
+        project.save()
+        Tts.set_model_params_using_project(project)
+
+    project.vibevoice_lora_target = target
+    project.save()
+    Tts.set_model_params_using_project(project)
+    Tts.clear_tts_model() # for good measure
+    try:
+        instance = Tts.get_vibevoice()
+    except Exception as e:
+        revert()
+        AskUtil.ask_error(f"\n{make_error_string(e)}")
+        return
+
+    if instance.has_lora:
+        print_feedback("\nLoRA set:", target)
+    else:
+        revert()
+        AskUtil.ask_error("\n{COL_ERROR}Couldn't load LoRA")
+
+def on_clear_lora(state: State, __: MenuItem) -> None:
+    state.project.vibevoice_lora_target = ""
+    state.project.save()
+    Tts.set_model_params_using_project(state.project)
+    Tts.clear_tts_model()
+    print_feedback("Cleared LoRA")

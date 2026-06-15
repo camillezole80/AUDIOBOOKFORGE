@@ -45,33 +45,110 @@ class OllamaService {
     }
 
     /// Envoie un chapitre à Ollama pour injection de balises
+    func analyzeChapter(chapterText: String, title: String) async throws -> ChapterArtDirection {
+        guard let url = URL(string: "\(baseURL)/api/generate") else {
+            throw OllamaError.invalidURL
+        }
+        let prompt = """
+        Lis le chapitre entier avant de répondre. Analyse sa mise en scène pour une narration
+        audio cohérente : paragraphes précédents et suivants, ton général, style littéraire,
+        point de vue, rythme, dialogues, personnages et progression émotionnelle.
+
+        Retourne UNIQUEMENT un objet JSON valide avec exactement ces clés :
+        "overallTone", "literaryStyle", "narrativeVoice", "pacing", "emotionalArc",
+        "characterDynamics", "dialogueGuidance", "restraintNotes".
+        Toutes les valeurs sont des chaînes concises. N'invente aucun fait.
+
+        Titre : \(title)
+        Chapitre complet :
+        \(chapterText)
+        """
+        let body: [String: Any] = [
+            "model": "qwen2.5:7b",
+            "prompt": prompt,
+            "format": "json",
+            "temperature": 0.2,
+            "stream": false,
+        ]
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = json["response"] as? String,
+              let contentData = content.data(using: .utf8) else {
+            throw OllamaError.requestFailed
+        }
+        do {
+            return try JSONDecoder().decode(ChapterArtDirection.self, from: contentData)
+        } catch {
+            throw OllamaError.invalidArtDirection
+        }
+    }
+
     /// - Parameters:
     ///   - chapterText: Le texte brut du chapitre
+    ///   - densityInstruction: consigne de densité de balises (voir AIConfig.tagDensityInstruction)
     ///   - progressHandler: Callback pour la progression (streaming)
     /// - Returns: Le texte enrichi avec les balises
     func injectTags(
         chapterText: String,
+        taggingMode: TaggingMode = .fishS2,
+        densityInstruction: String = "balisage MODÉRÉ : environ 1 balise toutes les 3-4 phrases en moyenne",
+        artDirection: ChapterArtDirection? = nil,
         progressHandler: ((String) -> Void)? = nil
     ) async throws -> String {
+        guard taggingMode.usesAI else { return chapterText }
         guard let url = URL(string: "\(baseURL)/api/generate") else {
             throw OllamaError.invalidURL
         }
 
+        let formatRules: String
+        switch taggingMode {
+        case .none:
+            return chapterText
+        case .fishS2:
+            formatRules = """
+            Insère uniquement ces marqueurs Fish S2 officiels entre crochets :
+            [happy], [sad], [angry], [excited], [calm], [nervous], [scared], [worried],
+            [surprised], [hopeful], [determined], [mysterious], [in a hurry tone],
+            [shouting], [whispering], [soft tone], [laughing], [chuckling], [sighing],
+            [gasping], [break], [long-break].
+            Place-les au début des phrases, avec une émotion principale par phrase et au
+            maximum deux marqueurs compatibles.
+            """
+        case .qwen3TTS:
+            formatRules = """
+            Insère des instructions au format exact [[qwen:instruction en français]] avant un
+            segment cohérent de 1 à 3 phrases. Chaque instruction s'applique à tout ce segment.
+            Décris uniquement le jeu vocal momentané, sans modifier le timbre, l'âge, le genre,
+            l'accent ou l'identité de la voix. Utilise 10 mots maximum et un ou deux attributs,
+            par exemple : [[qwen:Inquiet, voix basse et retenue]].
+            Ne demande jamais de bruitage, de parole ajoutée, de cri ajouté ou de modification
+            du texte. N'utilise aucune balise Fish.
+            """
+        }
+
+        let direction = artDirection?.promptContext ?? "Aucune fiche préalable disponible."
         let prompt = """
         Tu es un directeur artistique spécialisé dans la narration d'audiobooks.
-        Tu reçois un passage de texte en français.
-        Ta tâche est d'insérer des balises d'expression Fish Audio S2 Pro directement dans le texte,
-        aux endroits précis où elles améliorent la narration.
+        Tu reçois un chapitre complet et sa fiche de direction artistique.
+        Ta tâche est d'ajouter des indications expressives directement dans le texte.
+
+        FICHE DE DIRECTION ARTISTIQUE :
+        \(direction)
 
         Règles strictes :
+        - Utilise les paragraphes précédents et suivants pour chaque choix
+        - Respecte le ton, le style, le point de vue et l'arc émotionnel de la fiche
+        - Préserve les progressions et différencie les dialogues sans caricature
         - Ne modifie JAMAIS le texte original, les mots, la ponctuation ou l'orthographe
-        - Insère uniquement des balises entre crochets : [whisper], [excited], [sad], [pause],
-          [angry], [laughing], [chuckle], [emphasis], [clearing throat], [inhale],
-          [professional broadcast tone], [warm], [tense], [mysterious]
-        - Une balise s'applique à la phrase ou segment qui la suit immédiatement
-        - N'abuse pas des balises : maximum 1 balise tous les 3-4 phrases en moyenne
-        - Pour les dialogues : utilise [excited], [whisper], [angry] etc. selon le contexte émotionnel
-        - Pour la narration neutre : laisse sans balise ou utilise [warm] occasionnellement
+        - \(formatRules)
+        - DENSITÉ DEMANDÉE : \(densityInstruction)
         - Retourne uniquement le texte enrichi, sans commentaires ni explications
 
         Texte à enrichir :
@@ -150,6 +227,7 @@ enum OllamaError: Error, LocalizedError {
     case requestFailed
     case modelNotAvailable
     case timeout
+    case invalidArtDirection
 
     var errorDescription: String? {
         switch self {
@@ -161,6 +239,8 @@ enum OllamaError: Error, LocalizedError {
             return "Le modèle Qwen3 n'est pas disponible"
         case .timeout:
             return "La requête a expiré"
+        case .invalidArtDirection:
+            return "Ollama n'a pas produit une fiche de direction artistique JSON valide"
         }
     }
 }

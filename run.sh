@@ -49,7 +49,7 @@ p+=struct.pack('>I',13)+b'IHDR'+ihdr+struct.pack('>I',zlib.crc32(b'IHDR'+ihdr)&0
 c=zlib.compress(rows)
 p+=struct.pack('>I',len(c))+b'IDAT'+c+struct.pack('>I',zlib.crc32(b'IDAT'+c)&0xFFFFFFFF)
 p+=struct.pack('>I',0)+b'IEND'+struct.pack('>I',zlib.crc32(b'IEND')&0xFFFFFFFF)
-with open('/Volumes/J3THext/Audiobookforge/AudiobookForge/AppIcon.png','wb') as f: f.write(p)
+with open('AudiobookForge/AppIcon.png','wb') as f: f.write(p)
 PYEOF
   cp "$DIR/AudiobookForge/AppIcon.png" "$ICON" 2>/dev/null || true
 fi

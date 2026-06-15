@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+from tts_audiobook_tool.app_types import RealTimeMenuState
+from tts_audiobook_tool.ask_util import AskUtil
+from tts_audiobook_tool.tts_model.oute_util import OuteUtil
+from tts_audiobook_tool.prefs import Prefs
+from tts_audiobook_tool.project import Project
+from tts_audiobook_tool.project_util import ProjectUtil
+from tts_audiobook_tool.stt import Stt
+from tts_audiobook_tool.tts_model.tts_model_info import TtsModelInfos
+from tts_audiobook_tool.util import *
+from tts_audiobook_tool.constants import *
+from tts_audiobook_tool.whitelist import Whitelist
+
+class State:
+    """
+    Holds app's user-related state
+    Most importantly, `project` and `prefs`
+    """
+
+    _prefs: Prefs
+    _project: Project
+
+
+    def __init__(self):
+
+        self.prefs = Prefs.load()
+
+        self.real_time = RealTimeMenuState()
+
+        self._project = None # type: ignore
+
+        if not self.prefs.project_dir:
+            self.project = Project(dir_path="")
+        else:
+            result = ProjectUtil.load_using_dir_path(self.prefs.project_dir)
+            if isinstance(result, str):
+                AskUtil.ask_error(result)
+                self.prefs.project_dir = ""
+                self.project = Project(dir_path="")
+            else:
+                self.project = result
+
+    @property
+    def project(self) -> Project:
+        return self._project
+
+    @project.setter
+    def project(self, value: Project) -> None:
+        from tts_audiobook_tool.tts import Tts
+        
+        if self._project and self._project != value:
+            self._project.kill()
+
+        self._project = value
+
+        # Sync static values
+        Tts.set_model_params_using_project(self.project)
+        Whitelist().set_language_code(self.project.language_code)
+        self.real_time.project_text_line_range = self.project.realtime_line_range
+
+    @property
+    def prefs(self) -> Prefs:
+        return self._prefs
+
+    @prefs.setter
+    def prefs(self, value: Prefs) -> None:
+        from tts_audiobook_tool.tts import Tts
+        self._prefs = value
+        # Sync static values
+        Stt.set_variant(self.prefs.stt_variant)
+        Stt.set_config(self.prefs.stt_config)
+        Tts.set_force_cpu(self.prefs.tts_force_cpu)
+
+    def make_and_set_new_project(self, path: str) -> str:
+        """
+        Inits project directory and sets new project instance
+        Return error string on fail
+        """
+        from tts_audiobook_tool.tts import Tts
+
+        try:
+            project_dir_path = Path(path).expanduser()
+        except:
+            return "Bad path"
+        if not project_dir_path.is_absolute():
+            return "Please use an absolute path"
+        
+        if project_dir_path.exists() and os.listdir(project_dir_path):
+            return "Directory is not empty"
+
+        # Make project dir
+        if not project_dir_path.exists():
+            try:
+                os.mkdir(project_dir_path) # note, not using `make_dirs()``
+            except Exception as e:
+                return f"Error creating directory: {e}"
+
+        # Make subdirs
+        try:
+            # Make audio segments subdir
+            audio_segments_path = project_dir_path / PROJECT_SOUND_SEGMENTS_SUBDIR
+            os.makedirs(audio_segments_path, exist_ok=True)
+            # Make concat subdir
+            concat_path = project_dir_path / PROJECT_CONCAT_SUBDIR
+            os.makedirs(concat_path, exist_ok=True)
+        except Exception as e:
+            return make_error_string(e)
+
+        # Make project 
+        self.prefs.project_dir = str(project_dir_path)
+        self.project = Project( dir_path=str(project_dir_path) )
+
+        if Tts.get_type() == TtsModelInfos.OUTE:
+            # Set Oute default voice
+            result = OuteUtil.load_oute_voice_json(OUTE_DEFAULT_VOICE_JSON_FILE_PATH)
+            if isinstance(result, str):
+                printt(result) # not ideal
+            else:
+                self.project.set_oute_voice_and_save(result, "default")
+
+        self.project.save()
+        return ""
+
+    def set_existing_project(self, path: str) -> None:
+        self.prefs.project_dir = path
+        result = ProjectUtil.load_using_dir_path(path)
+        if isinstance(result, str):
+            AskUtil.ask_error(result)
+            self.project = Project(dir_path="")
+        else:
+            self.project = result
+
+    def reset(self):
+        self.prefs.project_dir = ""
+        self.project = Project(dir_path="")
+        self.real_time = RealTimeMenuState()
+

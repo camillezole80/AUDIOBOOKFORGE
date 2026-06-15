@@ -1,65 +1,91 @@
 import Foundation
 
-/// Service d'export des fichiers audio finaux
+/// Service d'export des fichiers audio finaux.
+/// Refactorisé pour utiliser ProcessRunner (drainage de pipes → plus de deadlock ffmpeg),
+/// vérifier les codes de sortie, et tolérer les exports partiels.
 class ExportService {
     static let shared = ExportService()
-    
+
     private let pathResolver = PathResolver.shared
     private let logger = Logger.shared
 
-    /// Exporte un projet dans le format choisi
+    /// Erreurs d'export.
+    enum ExportError: Error, LocalizedError {
+        case noChaptersReady
+        case ffmpegFailed(stage: String, code: Int32, stderr: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .noChaptersReady:
+                return "Aucun chapitre n'a d'audio à exporter. Générez au moins un chapitre dans l'onglet Génération."
+            case .ffmpegFailed(let stage, let code, let stderr):
+                return "ffmpeg a échoué (\(stage), code \(code)) : \(stderr.suffix(300))"
+            }
+        }
+    }
+
+    /// Exporte un projet dans le format choisi.
+    /// Tolère les exports partiels : seuls les chapitres ayant un `audioFilePath`
+    /// existant sur disque sont exportés. Si aucun n'est prêt, lève `.noChaptersReady`.
     func exportProject(
         project: Project,
         format: ExportFormat,
         structure: ExportStructure,
         progressHandler: @escaping (Double) -> Void
     ) async throws -> [String] {
+        let readyChapters = project.chapters.filter {
+            guard let path = $0.audioFilePath else { return false }
+            return FileManager.default.fileExists(atPath: path)
+        }
+        guard !readyChapters.isEmpty else {
+            throw ExportError.noChaptersReady
+        }
+
+        logger.info("Export : \(readyChapters.count)/\(project.chapters.count) chapitres prêts à exporter")
+
         let exportDir = "\(project.projectDirectory)/export"
         try FileManager.default.createDirectory(atPath: exportDir, withIntermediateDirectories: true)
 
-        var exportedFiles: [String] = []
-
         switch structure {
         case .perChapter:
-            exportedFiles = try await exportPerChapter(
+            return try await exportPerChapter(
                 project: project,
+                readyChapters: readyChapters,
                 format: format,
                 exportDir: exportDir,
                 progressHandler: progressHandler
             )
         case .singleM4B:
-            if let singleFile = try await exportSingleM4B(
+            if let single = try await exportSingleM4B(
                 project: project,
+                readyChapters: readyChapters,
                 format: format,
                 exportDir: exportDir,
                 progressHandler: progressHandler
             ) {
-                exportedFiles = [singleFile]
+                return [single]
             }
+            return []
         }
-
-        return exportedFiles
     }
 
-    /// Exporte un fichier par chapitre
+    // MARK: - Per-chapter export
+
     private func exportPerChapter(
         project: Project,
+        readyChapters: [Chapter],
         format: ExportFormat,
         exportDir: String,
         progressHandler: @escaping (Double) -> Void
     ) async throws -> [String] {
         var exportedFiles: [String] = []
 
-        for (index, chapter) in project.chapters.enumerated() {
-            guard let audioPath = chapter.audioFilePath,
-                  FileManager.default.fileExists(atPath: audioPath) else { continue }
+        for (i, chapter) in readyChapters.enumerated() {
+            guard let audioPath = chapter.audioFilePath else { continue }
 
-            let chapterNum = String(format: "%02d", index + 1)
-            let safeTitle = chapter.title
-                .replacingOccurrences(of: "/", with: "-")
-                .replacingOccurrences(of: ":", with: "-")
-            let extension_ = format.fileExtension
-            let outputPath = "\(exportDir)/\(chapterNum)_\(safeTitle).\(extension_)"
+            let chapterNum = String(format: "%02d", chapter.index)
+            let safeTitle = sanitizeFilename(chapter.title)
+            let outputPath = "\(exportDir)/\(chapterNum)_\(safeTitle).\(format.fileExtension)"
 
             try await convertAudio(
                 inputPath: audioPath,
@@ -67,57 +93,62 @@ class ExportService {
                 format: format,
                 metadata: project.metadata,
                 chapterTitle: chapter.title,
-                chapterIndex: index + 1,
+                chapterIndex: chapter.index,
                 coverPath: project.coverImagePath
             )
 
             exportedFiles.append(outputPath)
 
             await MainActor.run {
-                progressHandler(Double(index + 1) / Double(project.chapters.count))
+                progressHandler(Double(i + 1) / Double(readyChapters.count))
             }
         }
 
         return exportedFiles
     }
 
-    /// Exporte un fichier M4B unique avec marqueurs de chapitres
+    // MARK: - Single M4B export
+
     private func exportSingleM4B(
         project: Project,
+        readyChapters: [Chapter],
         format: ExportFormat,
         exportDir: String,
         progressHandler: @escaping (Double) -> Void
     ) async throws -> String? {
-        guard !project.chapters.isEmpty else { return nil }
+        let safeBookTitle = sanitizeFilename(
+            project.metadata.title.isEmpty ? project.name : project.metadata.title
+        )
+        // M4B nécessite codec AAC. Même si l'utilisateur a choisi WAV ou MP3,
+        // on garde l'extension M4B et on force AAC (c'est par définition).
+        let outputPath = "\(exportDir)/\(safeBookTitle).m4b"
 
-        let outputPath = "\(exportDir)/\(project.metadata.title).m4b"
-
-        // Créer un fichier de concaténation avec les chapitres
         let concatPath = "\(exportDir)/concat_list.txt"
-        var concatContent = ""
-
-        for chapter in project.chapters {
-            guard let audioPath = chapter.audioFilePath,
-                  FileManager.default.fileExists(atPath: audioPath) else { continue }
-            concatContent += "file '\(audioPath)'\n"
+        let metadataPath = "\(exportDir)/chapter_metadata.txt"
+        defer {
+            try? FileManager.default.removeItem(atPath: concatPath)
+            try? FileManager.default.removeItem(atPath: metadataPath)
         }
 
+        // Concat list
+        var concatContent = ""
+        for chapter in readyChapters {
+            guard let path = chapter.audioFilePath else { continue }
+            // Échappement des apostrophes dans le path pour la concat list ffmpeg
+            let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+            concatContent += "file '\(escaped)'\n"
+        }
         try concatContent.write(toFile: concatPath, atomically: true, encoding: .utf8)
 
-        // Créer le fichier de métadonnées des chapitres
-        let metadataPath = "\(exportDir)/chapter_metadata.txt"
+        // Métadonnées des chapitres
         var metadataContent = ";FFMETADATA1\n"
         metadataContent += "title=\(project.metadata.title)\n"
         metadataContent += "artist=\(project.metadata.author)\n"
 
-        // Calculer les timestamps pour chaque chapitre
         var currentTimestamp: Int64 = 0
-        for chapter in project.chapters {
-            guard let audioPath = chapter.audioFilePath,
-                  FileManager.default.fileExists(atPath: audioPath) else { continue }
-
-            // Obtenir la durée du fichier audio
-            let duration = try await getAudioDuration(filePath: audioPath)
+        for chapter in readyChapters {
+            guard let audioPath = chapter.audioFilePath else { continue }
+            let duration = (try? await getAudioDuration(filePath: audioPath)) ?? 0
             let durationMs = Int64(duration * 1000)
 
             metadataContent += "\n[CHAPTER]\n"
@@ -128,59 +159,65 @@ class ExportService {
 
             currentTimestamp += durationMs
         }
-
         try metadataContent.write(toFile: metadataPath, atomically: true, encoding: .utf8)
 
-        // Concaténer et appliquer les métadonnées
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
-
-        // Paramètres de codec selon le format choisi
-        var codecArgs: [String]
-        switch format {
-        case .wav:
-            codecArgs = ["-c:a", "pcm_s24le", "-sample_fmt", "s24"]
-        case .aac:
-            codecArgs = ["-c:a", "aac", "-b:a", "256k"]
-        case .mp3:
-            codecArgs = ["-c:a", "libmp3lame", "-b:a", "320k"]
-        }
-
-        process.arguments = [
+        // Construction propre des arguments ffmpeg.
+        // Ordre des inputs (numérotés pour les -map) :
+        //   0 = concat.txt (audio)
+        //   1 = metadata.txt (métadonnées)
+        //   2 = cover.jpg (optionnel)
+        var args: [String] = [
+            "-nostdin",
+            "-loglevel", "error",
             "-f", "concat",
             "-safe", "0",
             "-i", concatPath,
-            "-i", metadataPath,
-            "-map_metadata", "1",
-        ] + codecArgs + [
-            "-ar", "44100",
-            outputPath,
-            "-y"
+            "-i", metadataPath
         ]
 
+        let coverIncluded: Bool
         if let coverPath = project.coverImagePath,
            FileManager.default.fileExists(atPath: coverPath) {
-            // Insérer les arguments de couverture après les arguments de base
-            var args = process.arguments ?? []
-            args.insert(contentsOf: ["-i", coverPath, "-map", "0:a:0", "-map", "2:v:0"], at: 2)
-            process.arguments = args
+            args.append(contentsOf: ["-i", coverPath])
+            coverIncluded = true
+        } else {
+            coverIncluded = false
         }
 
-        try process.run()
-        process.waitUntilExit()
-
-        // Nettoyer
-        try? FileManager.default.removeItem(atPath: concatPath)
-        try? FileManager.default.removeItem(atPath: metadataPath)
-
-        await MainActor.run {
-            progressHandler(1.0)
+        args.append(contentsOf: ["-map_metadata", "1"])
+        // Mapping explicite pour ne pas tomber sur des warnings/erreurs ffmpeg
+        args.append(contentsOf: ["-map", "0:a:0"])
+        if coverIncluded {
+            args.append(contentsOf: ["-map", "2:v:0", "-disposition:v:0", "attached_pic"])
         }
 
+        // M4B = AAC obligatoire
+        args.append(contentsOf: ["-c:a", "aac", "-b:a", "256k"])
+        args.append(contentsOf: ["-ar", "44100"])
+        args.append("-y")
+        args.append(outputPath)
+
+        let result = try await ProcessRunner.run(
+            executable: pathResolver.ffmpegPath,
+            arguments: args
+        )
+
+        guard result.status == 0 else {
+            throw ExportError.ffmpegFailed(stage: "M4B concat", code: result.status, stderr: result.stderr)
+        }
+
+        // Validation taille
+        let size = ((try? FileManager.default.attributesOfItem(atPath: outputPath))?[.size] as? Int) ?? 0
+        guard size > 1024 else {
+            throw ExportError.ffmpegFailed(stage: "M4B (sortie vide)", code: 0, stderr: result.stderr)
+        }
+
+        await MainActor.run { progressHandler(1.0) }
         return outputPath
     }
 
-    /// Convertit un fichier audio dans le format cible
+    // MARK: - Convert audio (single chapter)
+
     private func convertAudio(
         inputPath: String,
         outputPath: String,
@@ -190,75 +227,88 @@ class ExportService {
         chapterIndex: Int,
         coverPath: String?
     ) async throws {
-        logger.debug("Converting audio: \(inputPath) -> \(outputPath)")
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
+        logger.debug("Converting: \(inputPath) → \(outputPath)")
 
-        var arguments: [String] = [
-            "-i", inputPath,
-            "-ar", "44100"
-        ]
+        var args: [String] = ["-nostdin", "-loglevel", "error", "-i", inputPath]
 
-        // Ajouter la couverture si disponible
-        if let coverPath = coverPath, FileManager.default.fileExists(atPath: coverPath) {
-            arguments.append(contentsOf: ["-i", coverPath])
+        // Cover image (input n°1)
+        let coverIncluded: Bool
+        if let coverPath, FileManager.default.fileExists(atPath: coverPath) {
+            args.append(contentsOf: ["-i", coverPath])
+            coverIncluded = true
+        } else {
+            coverIncluded = false
+        }
+
+        // Mapping audio + cover
+        args.append(contentsOf: ["-map", "0:a:0"])
+        if coverIncluded {
+            args.append(contentsOf: ["-map", "1:v:0", "-disposition:v:0", "attached_pic"])
         }
 
         // Métadonnées
-        arguments.append(contentsOf: [
+        args.append(contentsOf: [
             "-metadata", "title=\(chapterTitle)",
             "-metadata", "artist=\(metadata.author)",
             "-metadata", "album=\(metadata.title)",
             "-metadata", "track=\(chapterIndex)",
-            "-metadata", "comment=Généré par AudiobookForge + Fish S2 Pro"
+            "-metadata", "comment=Généré par AudiobookForge"
         ])
 
-        // Paramètres de codec selon le format
+        // Codec selon le format
         switch format {
         case .wav:
-            arguments.append(contentsOf: [
-                "-c:a", "pcm_s24le",
-                "-sample_fmt", "s24"
-            ])
+            args.append(contentsOf: ["-c:a", "pcm_s24le", "-sample_fmt", "s24"])
         case .aac:
-            arguments.append(contentsOf: [
-                "-c:a", "aac",
-                "-b:a", "256k"
-            ])
+            args.append(contentsOf: ["-c:a", "aac", "-b:a", "256k"])
         case .mp3:
-            arguments.append(contentsOf: [
-                "-c:a", "libmp3lame",
-                "-b:a", "320k"
-            ])
+            args.append(contentsOf: ["-c:a", "libmp3lame", "-b:a", "320k"])
         }
 
-        arguments.append(contentsOf: [outputPath, "-y"])
+        args.append(contentsOf: ["-ar", "44100"])
+        args.append("-y")
+        args.append(outputPath)
 
-        try process.run()
-        process.waitUntilExit()
+        let result = try await ProcessRunner.run(
+            executable: pathResolver.ffmpegPath,
+            arguments: args
+        )
+
+        guard result.status == 0 else {
+            throw ExportError.ffmpegFailed(stage: "convert \(chapterTitle)", code: result.status, stderr: result.stderr)
+        }
+
+        let size = ((try? FileManager.default.attributesOfItem(atPath: outputPath))?[.size] as? Int) ?? 0
+        guard size > 1024 else {
+            throw ExportError.ffmpegFailed(stage: "convert \(chapterTitle) (sortie vide)", code: 0, stderr: result.stderr)
+        }
     }
 
-    /// Obtient la durée d'un fichier audio via ffprobe
+    // MARK: - ffprobe duration
+
     private func getAudioDuration(filePath: String) async throws -> TimeInterval {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pathResolver.ffprobePath)
-        process.arguments = [
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            filePath
-        ]
+        let result = try await ProcessRunner.run(
+            executable: pathResolver.ffprobePath,
+            arguments: [
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                filePath
+            ],
+            timeoutSeconds: 30
+        )
+        let raw = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return TimeInterval(raw) ?? 0
+    }
 
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
+    // MARK: - Helpers
 
-        try process.run()
-        process.waitUntilExit()
-
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let outputString = String(data: outputData, encoding: .utf8) ?? "0"
-        return TimeInterval(outputString.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    /// Retire les caractères dangereux pour un nom de fichier sur tous les FS courants.
+    private func sanitizeFilename(_ name: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/:\\?*<>|\"")
+        let cleaned = name.components(separatedBy: invalid).joined(separator: "-")
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "untitled" : trimmed
     }
 }
 

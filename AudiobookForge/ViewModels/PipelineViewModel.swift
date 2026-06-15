@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import UserNotifications
 
 /// ViewModel principal du pipeline de traitement
 @MainActor
@@ -17,19 +16,18 @@ class PipelineViewModel: ObservableObject {
     // Éditeur de balises
     @Published var selectedChapterIndex: Int = 0
     @Published var tagColors: [String: Color] = [
-        "[whisper]": .purple,
+        "[whispering]": .purple,
         "[excited]": .orange,
         "[sad]": .blue,
-        "[pause]": .gray,
+        "[break]": .gray,
+        "[long-break]": .gray,
         "[angry]": .red,
         "[laughing]": .yellow,
-        "[chuckle]": .yellow,
-        "[emphasis]": .green,
-        "[clearing throat]": .brown,
-        "[inhale]": .cyan,
-        "[professional broadcast tone]": .indigo,
-        "[warm]": .pink,
-        "[tense]": .red,
+        "[chuckling]": .yellow,
+        "[sighing]": .cyan,
+        "[gasping]": .cyan,
+        "[soft tone]": .pink,
+        "[in a hurry tone]": .red,
         "[mysterious]": .purple
     ]
 
@@ -108,13 +106,9 @@ class PipelineViewModel: ObservableObject {
         }
     }
 
-    /// Étapes effectivement affichées dans la barre, en tenant compte du moteur choisi.
-    /// L'étape Balises disparaît si le moteur courant ne lit pas les balises.
+    /// Le sélecteur de mode reste accessible dans l'étape Balises, même en mode Aucun.
     var visibleSteps: [PipelineStep] {
-        let supportsTags = project?.voiceConfig.engineSupportsTags ?? true
-        return supportsTags
-            ? PipelineStep.allCases
-            : PipelineStep.allCases.filter { $0 != .tags }
+        PipelineStep.allCases
     }
 
     func loadProject(_ project: Project) {
@@ -203,8 +197,65 @@ class PipelineViewModel: ObservableObject {
 
     // MARK: - Étape 2: Injection de balises
 
+    func updateTaggingMode(_ mode: TaggingMode) {
+        guard var project = project, project.aiConfig.taggingMode != mode else { return }
+
+        project.aiConfig.taggingMode = mode
+        switch mode {
+        case .fishS2:
+            project.voiceConfig.preferredProvider = .ttsAudiobookTool
+            project.voiceConfig.ttsModel = .fishS2Pro
+        case .qwen3TTS:
+            project.voiceConfig.preferredProvider = .ttsAudiobookTool
+            project.voiceConfig.ttsModel = .qwen3
+            if project.voiceConfig.resolvedQwenVoiceMode == .voiceClone,
+               project.voiceConfig.hasValidReference {
+                project.voiceConfig.qwenModelPath = VoiceConfig.defaultQwenVoiceCloneModelPath
+            } else if project.voiceConfig.resolvedQwenVoiceMode == .voiceDesign,
+                      project.voiceConfig.qwenVoiceDesignDescription?.isEmpty == false {
+                project.voiceConfig.qwenModelPath = VoiceConfig.defaultQwenVoiceDesignModelPath
+            } else {
+                project.voiceConfig.qwenVoiceMode = .customVoice
+                project.voiceConfig.qwenModelPath = VoiceConfig.defaultQwenModelPath
+                project.voiceConfig.qwenSpeakerId = "ryan"
+            }
+            project.voiceConfig.qwenLanguage = project.metadata.language
+            project.voiceConfig.enableSttValidation = true
+            project.voiceConfig.maxRetries = max(project.voiceConfig.maxRetries, 3)
+        case .none:
+            break
+        }
+        for index in project.chapters.indices {
+            project.chapters[index].taggedText = nil
+            if project.chapters[index].status == .tagged || project.chapters[index].status == .error {
+                project.chapters[index].status = .textReady
+            }
+        }
+        if project.status == .tagsInjected {
+            project.status = .textExtracted
+        }
+
+        projectManager.updateProject(project)
+        self.project = project
+        switch mode {
+        case .none:
+            progressText = "Balisage désactivé : le texte original sera utilisé."
+        case .fishS2:
+            progressText = "Fish S2 sélectionné pour le balisage et le rendu."
+        case .qwen3TTS:
+            progressText = project.voiceConfig.resolvedQwenVoiceMode == .voiceDesign
+                ? "Qwen3-TTS VoiceDesign sélectionné pour le balisage et le rendu."
+                : "Qwen3-TTS CustomVoice sélectionné pour le balisage et le rendu."
+        }
+    }
+
     func injectTags() async {
         guard var project = project, !project.chapters.isEmpty else { return }
+        guard project.aiConfig.taggingMode.usesAI else {
+            currentStep = .generation
+            progressText = "Balisage désactivé : passage direct à la génération."
+            return
+        }
         isProcessing = true
         isPaused = false
         errorMessage = nil
@@ -224,16 +275,22 @@ class PipelineViewModel: ObservableObject {
             // Traiter chaque chapitre avec sauvegarde incrémentielle
             for (index, chapter) in project.chapters.enumerated() {
                 // Vérifier si déjà balisé (reprise après timeout)
-                if chapter.status == .tagged && chapter.taggedText != nil {
+                if chapter.status == .tagged,
+                   chapter.taggedText != nil,
+                   chapter.artDirection != nil {
                     progress = Double(index + 1) / Double(project.chapters.count)
                     progressText = "Chapitre \(index + 1)/\(project.chapters.count) déjà enrichi (reprise)..."
                     continue
                 }
                 
                 guard !chapter.rawText.isEmpty else { continue }
-                guard !isPaused else { break }
+                guard !isPaused, !Task.isCancelled else {
+                    progressText = "Enrichissement interrompu."
+                    break
+                }
                 
                 do {
+                    let artDirection: ChapterArtDirection
                     let taggedText: String
                     
                     if useRemote && aiConfig.preferredProvider.requiresAPIKey {
@@ -241,20 +298,54 @@ class PipelineViewModel: ObservableObject {
                         guard let apiKey = keychain.get(for: aiConfig.preferredProvider) else {
                             throw RemoteAIError.missingAPIKey
                         }
-                        
-                        progressText = "Enrichissement chapitre \(index + 1)/\(project.chapters.count) via \(aiConfig.preferredProvider.displayName)..."
-                        
+
+                        if let savedDirection = project.chapters[index].artDirection {
+                            artDirection = savedDirection
+                        } else {
+                            progressText = "Analyse artistique chapitre \(index + 1)/\(project.chapters.count) via \(aiConfig.preferredProvider.displayName)..."
+                            artDirection = try await remoteAIService.analyzeChapter(
+                                text: chapter.rawText,
+                                title: chapter.title,
+                                provider: aiConfig.preferredProvider,
+                                apiKey: apiKey,
+                                model: modelName(for: aiConfig)
+                            )
+                            project.chapters[index].artDirection = artDirection
+                            projectManager.updateProject(project)
+                            self.project = project
+                        }
+
+                        progressText = "Balisage chapitre \(index + 1)/\(project.chapters.count) via \(aiConfig.preferredProvider.displayName)..."
                         taggedText = try await remoteAIService.injectTags(
                             text: chapter.rawText,
                             provider: aiConfig.preferredProvider,
-                            apiKey: apiKey
+                            apiKey: apiKey,
+                            model: modelName(for: aiConfig),
+                            taggingMode: aiConfig.taggingMode,
+                            densityInstruction: aiConfig.tagDensityInstruction,
+                            artDirection: artDirection
                         )
                     } else {
                         // Utiliser Ollama local
-                        progressText = "Enrichissement chapitre \(index + 1)/\(project.chapters.count) via Ollama..."
-                        
+                        if let savedDirection = project.chapters[index].artDirection {
+                            artDirection = savedDirection
+                        } else {
+                            progressText = "Analyse artistique chapitre \(index + 1)/\(project.chapters.count) via Ollama..."
+                            artDirection = try await ollamaService.analyzeChapter(
+                                chapterText: chapter.rawText,
+                                title: chapter.title
+                            )
+                            project.chapters[index].artDirection = artDirection
+                            projectManager.updateProject(project)
+                            self.project = project
+                        }
+
+                        progressText = "Balisage chapitre \(index + 1)/\(project.chapters.count) via Ollama..."
                         taggedText = try await ollamaService.injectTags(
-                            chapterText: chapter.rawText
+                            chapterText: chapter.rawText,
+                            taggingMode: aiConfig.taggingMode,
+                            densityInstruction: aiConfig.tagDensityInstruction,
+                            artDirection: artDirection
                         )
                     }
                     
@@ -317,24 +408,62 @@ class PipelineViewModel: ObservableObject {
             let aiConfig = project.aiConfig
             let useRemote = aiConfig.forceRemote || (aiConfig.preferredProvider != .ollama)
             
+            let artDirection: ChapterArtDirection
             let taggedText: String
             
             if useRemote && aiConfig.preferredProvider.requiresAPIKey {
                 guard let apiKey = keychain.get(for: aiConfig.preferredProvider) else {
                     throw RemoteAIError.missingAPIKey
                 }
-                
+
+                if let savedDirection = project.chapters[index].artDirection {
+                    artDirection = savedDirection
+                } else {
+                    progressText = "Analyse artistique du chapitre via \(aiConfig.preferredProvider.displayName)…"
+                    artDirection = try await remoteAIService.analyzeChapter(
+                        text: project.chapters[index].rawText,
+                        title: project.chapters[index].title,
+                        provider: aiConfig.preferredProvider,
+                        apiKey: apiKey,
+                        model: modelName(for: aiConfig)
+                    )
+                    project.chapters[index].artDirection = artDirection
+                    projectManager.updateProject(project)
+                    self.project = project
+                }
+                progressText = "Application de la direction artistique…"
                 taggedText = try await remoteAIService.injectTags(
                     text: project.chapters[index].rawText,
                     provider: aiConfig.preferredProvider,
-                    apiKey: apiKey
+                    apiKey: apiKey,
+                    model: modelName(for: aiConfig),
+                    taggingMode: aiConfig.taggingMode,
+                    densityInstruction: aiConfig.tagDensityInstruction,
+                    artDirection: artDirection
                 )
             } else {
+                if let savedDirection = project.chapters[index].artDirection {
+                    artDirection = savedDirection
+                } else {
+                    progressText = "Analyse artistique du chapitre via Ollama…"
+                    artDirection = try await ollamaService.analyzeChapter(
+                        chapterText: project.chapters[index].rawText,
+                        title: project.chapters[index].title
+                    )
+                    project.chapters[index].artDirection = artDirection
+                    projectManager.updateProject(project)
+                    self.project = project
+                }
+                progressText = "Application de la direction artistique…"
                 taggedText = try await ollamaService.injectTags(
-                    chapterText: project.chapters[index].rawText
+                    chapterText: project.chapters[index].rawText,
+                    taggingMode: aiConfig.taggingMode,
+                    densityInstruction: aiConfig.tagDensityInstruction,
+                    artDirection: artDirection
                 )
             }
 
+            project.chapters[index].artDirection = artDirection
             project.chapters[index].taggedText = taggedText
             project.chapters[index].status = .tagged
 
@@ -348,6 +477,15 @@ class PipelineViewModel: ObservableObject {
         }
 
         isProcessing = false
+    }
+
+    private func modelName(for config: AIConfig) -> String {
+        switch config.preferredProvider {
+        case .openai: return config.openaiModel
+        case .anthropic: return config.anthropicModel
+        case .deepseek: return config.deepseekModel
+        case .ollama: return ""
+        }
     }
 
     func removeAllTags(from chapterIndex: Int) {
@@ -480,7 +618,10 @@ class PipelineViewModel: ObservableObject {
         self.project = updatedProject  // refresh UI immédiat
 
         for (chapterIndex, chapter) in updatedProject.chapters.enumerated() {
-            guard !isPaused else { break }
+            guard !isPaused, !Task.isCancelled else {
+                progressText = "Génération interrompue."
+                break
+            }
 
             // Ignorer les chapitres déjà générés
             if chapter.status == .audioReady && chapter.audioFilePath != nil {
@@ -543,7 +684,7 @@ class PipelineViewModel: ObservableObject {
             }
         }
 
-        if !isPaused {
+        if !isPaused && !Task.isCancelled {
             let errorChapters = updatedProject.chapters.filter { $0.status == .error }.count
             let allOK = errorChapters == 0
                 && updatedProject.chapters.allSatisfy { $0.status == .audioReady || $0.rawText.isEmpty }
@@ -566,12 +707,31 @@ class PipelineViewModel: ObservableObject {
         }
 
         isProcessing = false
+
+        // Fin de génération projet → libère le modèle (~17 Go) de la RAM.
+        // Le daemon se relancera tout seul à la prochaine génération.
+        Task { await TTSDaemon.shared.stop() }
     }
 
     func togglePause() {
         isPaused.toggle()
     }
-    
+
+    /// Force la fin d'une opération bloquée. Sert de "ceinture de sécurité"
+    /// si jamais l'UI se retrouve coincée en `isProcessing=true` après un
+    /// événement imprévu (sous-processus tué, deadlock pipe, etc.).
+    func cancelCurrentOperation() {
+        isProcessing = false
+        // On DOIT passer isPaused à true, sinon les boucles de génération
+        // continuent en arrière-plan sans libérer le CPU/Disque
+        isPaused = true
+        progressText = "Opération annulée"
+        Logger.shared.warning("cancelCurrentOperation : reset manuel de isProcessing")
+        // Libère le modèle TTS du daemon — sinon il reste résident jusqu'à l'idle timeout
+        Task { await TTSDaemon.shared.stop() }
+    }
+
+
     func generateSingleChapter(at index: Int) async {
         guard let project = project,
               index < project.chapters.count,
@@ -708,11 +868,11 @@ class PipelineViewModel: ObservableObject {
             self.project = updatedProject
 
             progressText = "Export terminé ! \(exportedFiles.count) fichier(s) créé(s)"
-
-            // Notification macOS (UserNotifications framework)
-            Task {
-                await sendNotification(title: "AudiobookForge", body: "Export terminé : \(exportedFiles.count) fichier(s)")
-            }
+            // Note : on N'utilise PAS UNUserNotificationCenter ici. Dans une app
+            // Swift buildée via `swift build` (pas Xcode signed), l'appel à
+            // requestAuthorization bloque le thread principal jusqu'au crash
+            // par watchdog macOS. Le feedback UI dans ExportStepView (statut
+            // "Projet exporté avec succès !") est largement suffisant.
 
         } catch {
             errorMessage = error.localizedDescription
@@ -720,34 +880,6 @@ class PipelineViewModel: ObservableObject {
         }
 
         isProcessing = false
-    }
-    
-    // MARK: - Notifications
-    
-    private func sendNotification(title: String, body: String) async {
-        let center = UNUserNotificationCenter.current()
-        
-        // Demander la permission si nécessaire
-        do {
-            let granted = try await center.requestAuthorization(options: [.alert, .sound])
-            guard granted else { return }
-            
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.sound = .default
-            
-            let request = UNNotificationRequest(
-                identifier: UUID().uuidString,
-                content: content,
-                trigger: nil // Notification immédiate
-            )
-            
-            try await center.add(request)
-        } catch {
-            // Ignorer les erreurs de notification (non critique)
-            print("Failed to send notification: \(error)")
-        }
     }
     
     // MARK: - Export du texte balisé
@@ -783,13 +915,11 @@ class PipelineViewModel: ObservableObject {
             }
             
             progressText = "Export terminé : \(outputPath)"
-            
-            // Ouvrir le fichier dans le Finder
+
+            // Ouvrir le fichier dans le Finder (le feedback visuel est suffisant,
+            // pas besoin de notification système qui crashe dans cette build).
             NSWorkspace.shared.selectFile(outputPath, inFileViewerRootedAtPath: "")
-            
-            // Notification
-            await sendNotification(title: "AudiobookForge", body: "Export du texte balisé terminé")
-            
+
         } catch {
             errorMessage = "Erreur lors de l'export : \(error.localizedDescription)"
             showError = true

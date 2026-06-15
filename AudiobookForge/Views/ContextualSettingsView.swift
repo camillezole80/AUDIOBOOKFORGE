@@ -87,6 +87,9 @@ struct TagsSettings: View {
             if let project = pipelineVM.project {
                 Text(project.aiConfig.preferredProvider.displayName)
                     .font(.callout)
+                Text("Mode : \(project.aiConfig.taggingMode.displayName)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } else {
                 Text("Non configuré")
                     .font(.callout)
@@ -98,29 +101,41 @@ struct TagsSettings: View {
 
             Divider()
 
-            Label("Balises disponibles", systemImage: "tag")
+            Label("Format", systemImage: "tag")
                 .font(.headline)
 
-            TagList()
+            if pipelineVM.project?.aiConfig.taggingMode == .qwen3TTS {
+                Text("[[qwen:Parler doucement, avec inquiétude]]")
+                    .font(.caption)
+                    .foregroundColor(.purple)
+                Text("Instruction retirée du texte et transmise séparément au moteur.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            } else if pipelineVM.project?.aiConfig.taggingMode == TaggingMode.none {
+                Text("Aucun enrichissement")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                TagList()
+            }
         }
     }
 }
 
 struct TagList: View {
     let tags = [
-        ("[whisper]", "Murmure"),
+        ("[whispering]", "Murmure"),
         ("[excited]", "Excité"),
         ("[sad]", "Triste"),
-        ("[pause]", "Pause"),
+        ("[break]", "Pause courte"),
+        ("[long-break]", "Pause longue"),
         ("[angry]", "En colère"),
         ("[laughing]", "Rire"),
-        ("[chuckle]", "Ricanement"),
-        ("[emphasis]", "Emphase"),
-        ("[clearing throat]", "Raclage de gorge"),
-        ("[inhale]", "Inspiration"),
-        ("[professional broadcast tone]", "Ton professionnel"),
-        ("[warm]", "Chaleureux"),
-        ("[tense]", "Tendu"),
+        ("[chuckling]", "Petit rire"),
+        ("[sighing]", "Soupir"),
+        ("[gasping]", "Souffle coupé"),
+        ("[soft tone]", "Ton doux"),
+        ("[in a hurry tone]", "Ton pressé"),
         ("[mysterious]", "Mystérieux")
     ]
 

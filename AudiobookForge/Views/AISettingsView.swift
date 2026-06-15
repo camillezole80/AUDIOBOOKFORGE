@@ -10,6 +10,7 @@ struct AISettingsView: View {
     @State private var localForceRemote: Bool
     @State private var localFallbackToRemote: Bool
     @State private var localShowCostEstimate: Bool
+    @State private var localDeepSeekModel: String
     
     @State private var openaiKey: String = ""
     @State private var anthropicKey: String = ""
@@ -22,6 +23,8 @@ struct AISettingsView: View {
     @State private var isTestingConnection = false
     @State private var testResult: String?
     @State private var estimatedCost: (tokens: Int, cost: Double)?
+    @State private var saveStatus: String?  // feedback inline après clic sur "Sauvegarder"
+    @State private var saveStatusColor: Color = .green
     
     private let keychain = KeychainHelper.shared
     private let remoteAI = RemoteAIService.shared
@@ -33,6 +36,7 @@ struct AISettingsView: View {
         self._localForceRemote = State(initialValue: aiConfig.wrappedValue.forceRemote)
         self._localFallbackToRemote = State(initialValue: aiConfig.wrappedValue.fallbackToRemote)
         self._localShowCostEstimate = State(initialValue: aiConfig.wrappedValue.showCostEstimate)
+        self._localDeepSeekModel = State(initialValue: aiConfig.wrappedValue.deepseekModel)
     }
     
     var body: some View {
@@ -96,6 +100,18 @@ struct AISettingsView: View {
                                 showKey: $showDeepSeekKey,
                                 isActive: localProvider == .deepseek
                             )
+
+                            if localProvider == .deepseek {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Modèle DeepSeek")
+                                        .font(.subheadline)
+                                    TextField("deepseek-v4-flash", text: $localDeepSeekModel)
+                                        .textFieldStyle(.roundedBorder)
+                                    Text("Modèle recommandé : deepseek-v4-flash")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
                         }
                         
                         Divider()
@@ -167,20 +183,27 @@ struct AISettingsView: View {
                 }
                 
                 Button("Sauvegarder") {
-                    saveKeys()
-                    // Appliquer les changements
-                    aiConfig.preferredProvider = localProvider
-                    aiConfig.forceRemote = localForceRemote
-                    aiConfig.fallbackToRemote = localFallbackToRemote
-                    aiConfig.showCostEstimate = localShowCostEstimate
-                    dismiss()
+                    if commitChanges() {
+                        // On dismiss seulement si tout s'est bien passé.
+                        // Sinon on garde la sheet ouverte avec le message d'erreur visible.
+                        dismiss()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
-                
+                .keyboardShortcut(.return)
+
                 Button("Annuler") {
                     dismiss()
                 }
                 .keyboardShortcut(.escape)
+            }
+
+            // Feedback inline après tentative de sauvegarde
+            if let status = saveStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundColor(saveStatusColor)
+                    .padding(.top, 4)
             }
         }
         .padding(30)
@@ -198,16 +221,84 @@ struct AISettingsView: View {
         deepseekKey = keychain.get(for: .deepseek) ?? ""
     }
     
-    private func saveKeys() {
-        if !openaiKey.isEmpty {
-            _ = keychain.save(key: openaiKey, for: .openai)
+    /// Sauvegarde toutes les clés API non vides dans le Keychain.
+    /// Retourne la liste des providers dont la sauvegarde a ÉCHOUÉ (à signaler à l'utilisateur).
+    private func saveKeys() -> [AIProvider] {
+        var failed: [AIProvider] = []
+
+        func saveIfNonEmpty(_ key: String, for provider: AIProvider) {
+            guard !key.isEmpty else { return }
+            let ok = keychain.save(key: key, for: provider)
+            if !ok {
+                failed.append(provider)
+                print("❌ Échec keychain.save pour \(provider.rawValue)")
+            } else {
+                // Vérification post-write : on relit immédiatement pour s'assurer
+                // que la clé est bien lisible (utile pour diagnostiquer les bugs
+                // de Keychain dans une app non signée).
+                let retrieved = keychain.get(for: provider)
+                if retrieved != key {
+                    failed.append(provider)
+                    print("❌ keychain.save pour \(provider.rawValue) : SecItemAdd OK mais lecture incorrecte (\(retrieved?.prefix(10) ?? "nil"))")
+                } else {
+                    print("✅ Clé sauvegardée pour \(provider.rawValue) (\(key.count) caractères)")
+                }
+            }
         }
-        if !anthropicKey.isEmpty {
-            _ = keychain.save(key: anthropicKey, for: .anthropic)
+
+        saveIfNonEmpty(openaiKey, for: .openai)
+        saveIfNonEmpty(anthropicKey, for: .anthropic)
+        saveIfNonEmpty(deepseekKey, for: .deepseek)
+
+        return failed
+    }
+
+    /// Sauvegarde + persiste l'AIConfig en UNE seule écriture du binding.
+    /// Retourne true si tout est OK et la sheet peut être dismissée.
+    private func commitChanges() -> Bool {
+        // 1. Sauvegarder les clés (retourne ceux qui ont échoué)
+        let failedProviders = saveKeys()
+
+        // 2. Vérifier qu'on a bien la clé pour le provider sélectionné si nécessaire
+        if localProvider.requiresAPIKey {
+            let currentKey = getCurrentAPIKey()
+            if currentKey.isEmpty {
+                saveStatus = "⚠️ La clé API pour \(localProvider.displayName) est vide. Saisissez-la avant de sauvegarder."
+                saveStatusColor = .orange
+                return false
+            }
+            if failedProviders.contains(localProvider) {
+                saveStatus = "❌ Impossible de sauvegarder la clé \(localProvider.displayName) dans le Trousseau macOS. Vérifiez les permissions de l'app."
+                saveStatusColor = .red
+                return false
+            }
         }
-        if !deepseekKey.isEmpty {
-            _ = keychain.save(key: deepseekKey, for: .deepseek)
+
+        // 3. Single-write : on regroupe les 4 mutations en un seul commit du binding.
+        // Sinon chaque `aiConfig.X = Y` lit l'aiConfig, modifie un champ, écrit le tout —
+        // ce qui dans certaines configurations de binding peut perdre les mutations
+        // précédentes. Une écriture unique est sûre.
+        var newConfig = aiConfig
+        newConfig.preferredProvider = localProvider
+        newConfig.forceRemote = localForceRemote
+        newConfig.fallbackToRemote = localFallbackToRemote
+        newConfig.showCostEstimate = localShowCostEstimate
+        newConfig.deepseekModel = localDeepSeekModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "deepseek-v4-flash"
+            : localDeepSeekModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        aiConfig = newConfig
+
+        // Log de confirmation
+        print("✅ AIConfig persisté : provider=\(newConfig.preferredProvider.rawValue), forceRemote=\(newConfig.forceRemote), fallback=\(newConfig.fallbackToRemote)")
+
+        if !failedProviders.isEmpty {
+            saveStatus = "⚠️ Clés sauvegardées sauf : \(failedProviders.map { $0.displayName }.joined(separator: ", "))"
+            saveStatusColor = .orange
+            // On laisse la sheet ouverte pour que l'utilisateur voie le message
+            return false
         }
+
+        return true
     }
     
     private func getCurrentAPIKey() -> String {
@@ -225,19 +316,16 @@ struct AISettingsView: View {
         
         let key = getCurrentAPIKey()
         
-        do {
-            let success = await remoteAI.testConnection(provider: localProvider, apiKey: key)
-            
-            await MainActor.run {
-                testResult = success ? "✅" : "❌"
-                isTestingConnection = false
-            }
-        } catch {
-            await MainActor.run {
-                testResult = "❌"
-                isTestingConnection = false
-                print("❌ Test de connexion échoué: \(error.localizedDescription)")
-            }
+        let success: Bool
+        if localProvider == .deepseek {
+            success = await remoteAI.testDeepSeekConnection(apiKey: key)
+        } else {
+            success = await remoteAI.testConnection(provider: localProvider, apiKey: key)
+        }
+
+        await MainActor.run {
+            testResult = success ? "✅" : "❌"
+            isTestingConnection = false
         }
     }
 }

@@ -1,0 +1,340 @@
+import os
+import re
+
+from tts_audiobook_tool.ansi import Ansi
+
+package_dir = os.path.dirname(os.path.abspath(__file__))
+
+APP_NAME = "tts-audiobook-tool"
+APP_URL = "https://github.com/zeropointnine/tts-audiobook-tool"
+
+APP_USER_SUBDIR = "tts_audiobook_tool"
+APP_TEMP_SUBDIR = "tts_audiobook_tool"
+ASSETS_DIR_NAME = "assets"
+CHROME_USER_DATA_DIR_NAME = "chromium-user-data"
+
+PROJECT_SOUND_SEGMENTS_SUBDIR = "segments"
+PROJECT_CONCAT_SUBDIR = "combined"
+PROJECT_REALTIME_SUBDIR = "realtime"
+PROJECT_JSON_FILE_NAME = "project.json"
+PROJECT_TEXT_FILE_NAME = "project_text.json"
+PROJECT_TEXT_SEGMENTS_FILE_NAME = PROJECT_TEXT_FILE_NAME
+PROJECT_TEXT_RAW_FILE_NAME = "project_text_raw.txt"
+PROJECT_TEXT_EPUB_FILE_NAME = "project_text.epub"
+PROJECT_CONCAT_TEMP_TEXT_FILE_NAME = "ffmpeg_temp.txt"
+
+FFMPEG_COMMAND = "ffmpeg"
+
+STT_TEMP_TRANSCRIBED_WORDS = "temp_words.pkl"
+VALIDATION_UNSUPPORTED_LANGUAGES = ["zh", "ja", "ko"]
+
+# App's samplerate for final outputs (post-processed sound segments, sound output stream, etc).
+APP_SAMPLE_RATE = 48000
+
+# Samplerate required for whisper audio input
+WHISPER_SAMPLERATE = 16000
+
+MAX_WORDS_PER_SEGMENT_DEFAULT = 40
+MAX_WORDS_PER_SEGMENT_MIN = 20
+MAX_WORDS_PER_SEGMENT_MAX = 80
+
+TOP_P_MIN_DEFAULT = 0.01
+TOP_P_MAX_DEFAULT = 1.0
+
+TOP_K_MIN_DEFAULT = 1
+TOP_K_MAX_DEFAULT = 100
+
+REPETITION_PENALTY_MIN_DEFAULT = 1.0
+REPETITION_PENALTY_MAX_DEFAULT = 2.0
+
+SEED_MAX = 2**32 - 1
+
+CTRANSLATE_REQUIRED_CUDNN_VERSION = 91002
+
+OUTE_DEFAULT_VOICE_JSON_FILE_NAME = "en-female-1-neutral.json"
+OUTE_DEFAULT_VOICE_JSON_FILE_PATH = os.path.join(package_dir, ASSETS_DIR_NAME, OUTE_DEFAULT_VOICE_JSON_FILE_NAME)
+
+MENU_CLEARS_SCREEN_DEFAULT = True
+
+# Value used for normalization after any sound transform post-processing steps (eg, after high-shelf EQ)
+NORMALIZATION_HEADROOM_DB = 1.0
+
+# App's typical ffmpeg options wrt console output, etc
+FFMPEG_TYPICAL_OPTIONS = [
+    "-y",  # Overwrite output file if it exists
+    "-hide_banner", "-loglevel", "warning",
+    "-stats"
+]
+
+FFMPEG_ARGUMENTS_OUTPUT_FLAC = [
+    "-c:a", "flac",
+    "-sample_fmt",  "s16",
+    "-frame_size", "4096",
+    "-compression_level", "6"
+]
+AAC_BITRATES = ["64k", "96k"]
+AAC_BITRATE_DEFAULT = "96k"
+
+FFMPEG_ARGUMENTS_OUTPUT_AAC_TEMPLATE = [
+    "-c:a", "aac",
+    "-b:a", "%1",
+    "-movflags", "+faststart", # moves metadata to the front, for streaming, which we want
+    '-vn',                    # No video (important when input is mp3 for some reason)
+    # Do not use "-sample_fmt s16" here
+]
+
+def make_ffmpeg_arguments_output_aac(bitrate: str=AAC_BITRATE_DEFAULT) -> list[str]:
+    if bitrate not in AAC_BITRATES:
+        bitrate = AAC_BITRATE_DEFAULT
+    return [item.replace("%1", bitrate) for item in FFMPEG_ARGUMENTS_OUTPUT_AAC_TEMPLATE]
+
+# Backwards-compatible default AAC args
+FFMPEG_ARGUMENTS_OUTPUT_AAC = make_ffmpeg_arguments_output_aac()
+
+APP_META_FLAC_FIELD = "TTS_AUDIOBOOK_TOOL"
+APP_META_MP4_MEAN = "tts-audiobook-tool"
+APP_META_MP4_TAG = "audiobook-data"
+ABR_VERSION = 2
+PROJECT_SPEC_VERSION = 2
+
+AAC_SUFFIXES = [".m4a", ".m4b", ".mp4"]
+
+COL_ACCENT = Ansi.hex("ffaa44")
+COL_ERROR = Ansi.hex("ff0000")
+COL_DIM = Ansi.hex("888888")
+COL_MEDIUM = Ansi.hex("cccccc")
+COL_INPUT = Ansi.hex("aaaaaa")
+COL_OK = Ansi.hex("00ff00")
+COL_DEFAULT = Ansi.RESET # default text color being that of the terminal; we're assuming this is probably a light color
+COL_DIM_ITALICS = COL_DIM + Ansi.ITALICS
+
+GEN_OOM_ERROR_MESSAGE = "Likely out-of-memory error.\nStopping generation to prevent further failed attempts:"
+
+PLAYER_URL = "https://zeropointnine.github.io/tts-audiobook-tool/browser_player/"
+
+SECTION_SOUND_EFFECT_PATH = os.path.join(package_dir, ASSETS_DIR_NAME, "page-turn-a.wav")
+
+FILE_REQUESTOR_SOUND_TYPES = [('Sound files', '*.wav *.flac *.mp3,*.aac,*.m4a,*.ogg'), ('All files', '*.*')]
+
+# App uses this format for file names of audio fragments.
+# Example file name: "[00001] [0123456789ABCDEF] [my_voice] [any_other_bracketed_tags] Hello_world.flac"
+# Capturing group 1 is segment index - digits enclosed in brackets (eg, "00001")
+# Capturing group 2 is hex hash - 16 hex characters enclosed brackets (eg, "0123456789ABCDEF")
+# Capturing group 3 is voice label - alphanumeric chars (and underscores) enclosed in brackets
+# Rest of string can be anything
+pattern = r"\[(\d+)\] \[([0-9A-Fa-f]{16})\] \[(\w+)\] .*"
+SOUND_SEGMENT_FILE_NAME_PATTERN = re.compile(pattern)
+
+# Regex for "[h...]", where "h" is 16 hex characters.
+# Captures the hex string (w/o the brackets)
+# Eg, "[0123456789ABCDEF]"
+# App uses this format for including 64-bit hash values in filenames.
+pattern = r'\[([0-9a-fA-F]{16})\]'
+HASH_PATTERN = re.compile(pattern)
+
+VOICE_ADVANCED_SUPERLABEL = "Advanced:"
+
+OPT_IN_INSTRUCTIONS = (
+    "[1] Visit %1\n"
+    "    and authorize access using a logged-in Hugging Face account.\n"
+    "[2] Run `hf auth login` and enter valid Hugging Face access token.\n"
+    "[3] Restart the app"
+)
+
+# ---
+
+from tts_audiobook_tool.hint import Hint
+
+HINT_LONG_PATHS = Hint(
+    "long_paths",
+    "It appears your system does not support long file paths",
+    "App relies on pretty long filenames, so be sure to use\nshort directory paths when creating new projects"
+)
+
+HINT_OUTE_CONFIG = Hint(
+    "oute_config",
+    "This appears to be your first time running the application using the Oute TTS model",
+    "As a reminder, you'll want to review and adjust the settings\nin the file \"config_oute.py\" for optimal performance."
+)
+
+HINT_TKINTER = Hint(
+    "tkinter",
+    "tkinter not installed",
+    "Please install \"tkinter\" if you want OS file requestor functionality (It is not required, though)."
+)
+
+HINT_PROJECT_SUBDIRS = Hint(
+    "project_subdirs",
+    "Within your newly created project directory...",
+f"""The {COL_ACCENT}segments{COL_DEFAULT} subdirectory contains the individual audio segments generated by the TTS model.
+The {COL_ACCENT}combined{COL_DEFAULT} subdirectory contains the final, concatenated audio file/s ready for playing."""
+)
+
+HINT_LINE_BREAKS = Hint(
+    "line_breaks",
+    "Note:",
+    "Line breaks are treated as paragraph delimiters.\nIf your source text uses manual line breaks for word wrapping\n(eg, Project Gutenberg), you will want to reformat it first."
+)
+
+HINT_REGEN = Hint(
+    "regenerate",
+    "About re-generating segments with word errors...",
+"""Some segments with excessive word errors may not be easily correctable —
+even after multiple attempts — due to the TTS model being unable to render
+the audio correctly, or due to the speech-to-text validator producing false positives."""
+)
+
+HINT_MULTIPLE_MP3S = Hint(
+    "multiple_mp3s",
+    "Multiple MP3 files?",
+    "If you want to combine multiple MP3 files in a directory,\nthis can be done from the Tools/Options menu"
+)
+
+HINT_OUTE_LOUD_NORM = Hint(
+    "oute_loud_norm",
+    "Tip",
+    "Oute generations can have considerable variance in loudness.\nConsider using \"stronger.\""
+)
+
+HINT_FISH_S1_FIRST_COMPILE = Hint(
+    "fish_first",
+    "Please note...",
+"""On the first inference, the Fish model may go through a compilation step
+which may take a minute or two, with no feedback shown."""
+)
+
+HINT_FISH_S2_FIRST_COMPILE = Hint(
+    "fish_s2_first",
+    "Please note...",
+"""On the first inference, the Fish model may go through a compilation step
+which may take a minute or two, with no feedback shown."""
+)
+
+HINT_TEST_REAL_TIME = Hint(
+    "test_real_time",
+    "Tip",
+f"""After setting voice clone or changing other model properties,
+consider using \"{COL_ACCENT}Menu > Generate audio in realtime{COL_DEFAULT}\" to quickly test audio
+generation quality before committing to generating audiobook."""
+)
+
+HINT_SPEED_UP = Hint(
+    "speed_up",
+    "Note",
+"""Use this feature to create a sped-up (or slowed-down) copy of a voice clone sample.
+This can be (potentially) useful for modulating the speed of narration of the generated audio."""
+)
+
+HINT_INDEX_SAMPLE_LEN = Hint(
+    "index_sample_len",
+    "Note",
+    """IndexTTS2 ignores voice sample audio data past the 15 second mark"""
+)
+
+HINT_STT_ENHANCE = Hint(
+    "stt_enhance",
+    "Text preparation...",
+"""It's recommended to first remove any large chunks
+from the source text that do not occur in the audio narration.
+Common examples are: publisher information, table of contents, etc"""
+)
+
+HINT_STT_ENHANCE_CACHED = Hint(
+    "stt_enhance_cached",
+    "Transcription data is cached",
+"""If you feel the need to modify the source text to minimize \"discontinuities\",
+you can re-run the \"Enhance existing audiobook\" process, and it will run faster
+the second time through, as the audio transcription data has been cached."""
+)
+
+HINT_LINUX_CUDNN_VERSION = Hint(
+    "stt_linux_cudnn_version",
+    f"{COL_ERROR}cuDNN version mismatch",
+f"""The currently installed version of torch may be incompatible with faster-whisper for CUDA acceleration.
+Either downgrade your version of torch (see README file), or change the Whisper 
+device to CPU ({COL_ACCENT}Options > Whisper config > CPU{COL_DEFAULT}).""")
+
+HINT_MAX_WORDS_OVER_DEFAULT_MESSAGE = """The project's source text word count per segment (%1)
+exceeds the application's recommended range for the current TTS model (%2).
+Make sure this is what you want before generating audio."""
+
+HINT_CHATTERBOX_PYTHON_DOWNGRADE = Hint(
+    "chatterbox_python_downgrade",
+    "The app's requirements for Chatterbox have changed",
+"""To run the Chatterbox model, the app now requires a virtual environment running Python 3.11 (which is a downgrade). 
+Please re-install your Chatterbox-specific virtual environment using Python v3.11 by following the procedure described in the README.
+You could also choose to roll back to a previous commit if you do not care about the most recent updates..."""
+)
+
+HINT_VALIDATION_UNSUPPORTED_LANGUAGE = Hint(
+    "validation_unsupported_language",
+    "Transcription validation will be disabled",
+    "Transcription validation is unsupported for %1 and will be automatically disabled."
+)
+
+HINT_TRANSCRIPTION = Hint(
+    "transcription",
+    "Note",
+"""The Whisper speech-to-text model is used to check the generated audio for errors.
+Because it is used concurrently with the text-to-speech model, it can add 2-3 GB to 
+VRAM memory requirements."""
+)
+
+HINT_VOICE_TRANSCRIPT = Hint(
+    "voice_transcript",
+    "Voice clone transcript",
+"""Because this TTS model requires a transcript of the voice clone sample,
+the app will automatically transcribe the text using Whisper.
+If a .txt file with the same base file name exists, it will use that instead."""
+)
+
+HINT_FORCED_STRICTNESS_LOW = Hint(
+    "",
+    "Note",
+f"""Because language code is not en or es, the setting \"Word error tolerance\"
+has been automatically set to \"Low\""""
+)
+
+HINT_SEED = Hint(
+    "seed",
+    "Note",
+"""Setting a static seed value guarantees idempotent 
+audio generations when batching is not enabled.
+Re-tried generations will always use a random seed."""
+)
+
+HINT_BATCH = Hint(
+    "Batching",
+    "Note",
+"""When batching is active, lines will get processed slightly out of sequence 
+to maximize throughput."""
+)
+
+HINT_VIBEVOICE_LORA = Hint(
+    "vibevoice_lora",
+    "LoRA support is experimental",
+"""Current tips:
+- Train your LoRA using https://github.com/voicepowered-ai/VibeVoice-finetuning with parameter \"voice_prompt_drop_rate 1\"
+- Avoid using a LoRA and a voice clone sample at the same time"""
+)
+
+HINT_DELETE_SEGMENTS = Hint(
+    "delete_segments",
+    "Tip",
+"""Use this to selectively delete audio segments with poor or inaccurate output 
+(You can also just delete the files directly at: %1). 
+Afterwards, generate those items again as desired."""
+)
+
+HINT_LLM_CHAT = Hint(
+    "llm_chat",
+    "Tip",
+"""Works best when TTS model inferences faster (or ideally much faster) than realtime"""
+)
+
+HINT_UPDATED_UI = Hint(
+    "updated_ui",
+    "Updated UI",
+"""The app's menu system has been updated. Menus now always appear on a cleared screen. 
+You can revert this change the Options menu if you prefer the old behavior."""
+)

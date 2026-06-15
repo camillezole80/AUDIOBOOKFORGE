@@ -110,8 +110,7 @@ class ProjectManager: ObservableObject {
     }
     
     private func scanProjectDirectories() {
-        // Scanner le dossier /Volumes/J3THext/Audiobookforge/audio/Projects
-        let audioProjectsDir = "/Volumes/J3THext/Audiobookforge/audio/Projects"
+        let audioProjectsDir = pathResolver.projectsPath
         
         guard let contents = try? FileManager.default.contentsOfDirectory(atPath: audioProjectsDir) else {
             logger.warning("Could not scan audio projects directory")

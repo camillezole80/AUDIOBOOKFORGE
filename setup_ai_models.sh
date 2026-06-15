@@ -3,7 +3,7 @@
 # Installation des dépendances IA pour AudiobookForge
 # ============================================
 # Usage :
-#   cd /Volumes/J3THext/Audiobookforge
+#   cd /Volumes/J3THext/Soft/AudiobookForge
 #   bash setup_ai_models.sh
 # ============================================
 

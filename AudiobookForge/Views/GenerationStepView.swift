@@ -25,6 +25,10 @@ struct GenerationStepView: View {
                 // Bandeau de synthèse (vert/orange/gris) selon l'état global
                 ChapterSummaryBanner(chapters: project.chapters, isProcessing: pipelineVM.isProcessing)
 
+                // Bouton principal toujours visible (désactivé pendant la génération)
+                // + Pause/Annuler accessibles en parallèle.
+                GenerationControlBar(project: project)
+
                 // Liste des chapitres avec leur statut
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -55,6 +59,10 @@ struct GenerationStepView: View {
                                 ChapterProgressRow(index: index, chapter: chapter)
                             }
                         }
+                        // Marge à droite pour ne pas que les boutons d'action des lignes
+                        // (lecture, régénérer, réinitialiser) tombent SOUS la barre de scroll
+                        // macOS quand elle est visible.
+                        .padding(.trailing, 14)
                     }
                     .frame(maxHeight: 200)
                 }
@@ -62,76 +70,26 @@ struct GenerationStepView: View {
                 .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(8)
 
-                // Barre de progression globale
-                if pipelineVM.isProcessing {
-                    VStack(spacing: 8) {
-                        ProgressView(value: pipelineVM.progress) {
-                            Text(pipelineVM.progressText)
-                                .font(.caption)
-                        }
-                        .progressViewStyle(.linear)
+                // (Barre de progression maintenant intégrée dans GenerationControlBar)
 
-                        Text("\(Int(pipelineVM.progress * 100))%")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: 400)
+                // Info sur le provider audio
+                HStack {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(project.voiceConfig.preferredProvider == .fishAudio ? .blue : .green)
+                    Text(project.voiceConfig.preferredProvider == .fishAudio
+                         ? "Génération via Fish.Audio API"
+                         : "Génération locale via TTS Audiobook Tool")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
 
-                // Boutons de contrôle
-                VStack(spacing: 12) {
-                    if !pipelineVM.isProcessing {
-                        HStack(spacing: 16) {
-                            // Bouton pour générer tous les chapitres
-                            Button(action: {
-                                Task { await pipelineVM.generateAudio() }
-                            }) {
-                                HStack {
-                                    Image(systemName: "play.fill")
-                                    Text("Générer tous les chapitres")
-                                }
-                                .frame(maxWidth: 250)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!project.voiceConfig.hasValidReference)
-                        }
-                        
-                        // Info sur le provider audio
-                        if project.voiceConfig.preferredProvider == .fishAudio {
-                            HStack {
-                                Image(systemName: "info.circle")
-                                    .foregroundColor(.blue)
-                                Text("Génération via Fish.Audio API")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        } else {
-                            HStack {
-                                Image(systemName: "info.circle")
-                                    .foregroundColor(.green)
-                                Text("Génération locale")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    } else {
-                        Button(action: { pipelineVM.togglePause() }) {
-                            HStack {
-                                Image(systemName: pipelineVM.isPaused ? "play.fill" : "pause.fill")
-                                Text(pipelineVM.isPaused ? "Reprendre" : "Pause")
-                            }
-                            .frame(maxWidth: 150)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-
-                // Message si pas de voix configurée
+                // Message si pas de voix configurée (le bouton est de toute façon désactivé)
                 if !project.voiceConfig.hasValidReference {
                     HStack {
                         Image(systemName: "exclamationmark.triangle")
                             .foregroundColor(.orange)
-                        Text("Configurez d'abord un sample vocal dans l'étape Voix")
+                        Text(project.voiceConfig.missingReferenceHint
+                             ?? "Configurez d'abord un moteur de voix dans l'étape Voix")
                             .foregroundColor(.orange)
                     }
                     .font(.callout)
@@ -139,6 +97,79 @@ struct GenerationStepView: View {
             }
         }
         .padding()
+    }
+}
+
+// MARK: - Barre de contrôle principale
+
+/// Toujours affichée : bouton "Générer tous les chapitres" en évidence + actions
+/// secondaires (Pause / Annuler) à droite. Pendant la génération, le bouton principal
+/// est désactivé mais reste visible (l'utilisateur sait toujours où regarder).
+struct GenerationControlBar: View {
+    let project: Project
+    @EnvironmentObject private var pipelineVM: PipelineViewModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                // Bouton principal
+                Button(action: {
+                    Task { await pipelineVM.generateAudio() }
+                }) {
+                    HStack {
+                        Image(systemName: "play.fill")
+                        Text("Générer tous les chapitres")
+                    }
+                    .frame(maxWidth: 250)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(pipelineVM.isProcessing || !project.voiceConfig.hasValidReference)
+                .help(!project.voiceConfig.hasValidReference
+                      ? (project.voiceConfig.missingReferenceHint ?? "Configuration audio incomplète")
+                      : "Génère ou complète tous les chapitres (les chapitres déjà OK sont sautés)")
+
+                // Pause / Reprendre — visible uniquement pendant la génération
+                if pipelineVM.isProcessing {
+                    Button(action: { pipelineVM.togglePause() }) {
+                        HStack {
+                            Image(systemName: pipelineVM.isPaused ? "play.fill" : "pause.fill")
+                            Text(pipelineVM.isPaused ? "Reprendre" : "Pause")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .help("Met en pause entre deux chapitres")
+
+                    // Annuler — secours si l'UI semble bloquée
+                    Button(action: { pipelineVM.cancelCurrentOperation() }) {
+                        HStack {
+                            Image(systemName: "xmark.circle")
+                            Text("Annuler")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .help("Libère l'interface en cas de blocage (n'annule pas le sous-processus)")
+                }
+            }
+
+            // Barre de progression pendant la génération
+            if pipelineVM.isProcessing {
+                VStack(spacing: 4) {
+                    ProgressView(value: pipelineVM.progress) {
+                        Text(pipelineVM.progressText)
+                            .font(.caption)
+                    }
+                    .progressViewStyle(.linear)
+                    Text("\(Int(pipelineVM.progress * 100))%")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: 500)
+            }
+        }
     }
 }
 

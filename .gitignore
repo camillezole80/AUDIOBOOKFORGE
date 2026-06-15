@@ -51,7 +51,20 @@ external/tts-audiobook-tool/testx/
 data/
 outputs/
 ebooks/
-models/
+/models/
+/LocalData/
+/audio/Projects/
+
+# Generated application bundles and local media
+/AudiobookForge.app/
+/Archives/
+/Capture d’écran*.png
+
+# External TTS runtime data
+/external/tts-audiobook-tool/models/
+/external/tts-audiobook-tool/venv-*/
+/external/tts-audiobook-tool/project.json
+/external/tts-audiobook-tool/browser_player/*.m4a
 
 # Logs
 *.log

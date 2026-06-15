@@ -3,6 +3,8 @@ import Foundation
 /// Service centralisé pour résoudre les chemins des exécutables et dossiers du projet
 class PathResolver {
     static let shared = PathResolver()
+
+    static let externalVolumeRoot = "/Volumes/J3THext/Soft/AudiobookForge"
     
     private init() {}
     
@@ -10,15 +12,15 @@ class PathResolver {
     
     /// Résout la racine du projet (priorité à la variable d'env, puis au bundle, puis fallback)
     var projectRoot: String {
-        // Priorité 1 : Chemin fixe pour le disque externe J3THext
-        let fixedPath = "/Volumes/J3THext/Audiobookforge"
-        if FileManager.default.fileExists(atPath: "\(fixedPath)/backend/scripts") {
-            return fixedPath
-        }
-        
-        // Priorité 2 : Variable d'environnement
-        if let root = ProcessInfo.processInfo.environment["AUDIOBOOKFORGE_ROOT"] {
+        // Priorité 1 : variable d'environnement fournie par le lanceur.
+        if let root = ProcessInfo.processInfo.environment["AUDIOBOOKFORGE_ROOT"],
+           FileManager.default.fileExists(atPath: "\(root)/backend/scripts") {
             return root
+        }
+
+        // Priorité 2 : installation consolidée sur le disque externe.
+        if FileManager.default.fileExists(atPath: "\(Self.externalVolumeRoot)/backend/scripts") {
+            return Self.externalVolumeRoot
         }
         
         // Priorité 3 : Remonter depuis le bundle
@@ -36,6 +38,16 @@ class PathResolver {
         
         // Dernier recours : le dossier courant
         return FileManager.default.currentDirectoryPath
+    }
+
+    /// Dossier contenant les projets, leurs sources, textes, audios et exports.
+    var projectsPath: String {
+        "\(projectRoot)/audio/Projects"
+    }
+
+    /// Intégration locale multi-modèles utilisée par le daemon TTS.
+    var ttsAudiobookToolPath: String {
+        "\(projectRoot)/external/tts-audiobook-tool"
     }
     
     // MARK: - Backend Scripts

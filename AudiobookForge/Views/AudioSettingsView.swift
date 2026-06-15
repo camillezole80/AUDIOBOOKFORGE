@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 /// Vue de configuration des paramètres audio (Local MLX vs Fish.Audio API)
 struct AudioSettingsView: View {
@@ -16,7 +17,10 @@ struct AudioSettingsView: View {
     @State private var estimatedCost: (bytes: Int, cost: Double)?
     
     @State private var showCreateReferenceSheet = false
+    @State private var showVoiceDesignStudio = false
+    @State private var showQwenVoiceClone = false
     @State private var referenceId: String = ""
+    @StateObject private var voiceDesignLibrary = VoiceDesignLibrary.shared
     
     // Sélecteur de voix Fish.Audio
     @State private var availableVoices: [FishAudioVoice] = []
@@ -30,6 +34,14 @@ struct AudioSettingsView: View {
     @State private var ownVoiceIds: Set<String> = []
     /// Lecteur d'extraits audio Fish.Audio (un seul à la fois).
     @StateObject private var previewPlayer = VoicePreviewPlayer()
+    @State private var qwenTestText =
+        "La pluie frappait les vitres. Soudain, trois coups résonnèrent derrière la porte. Élise retint son souffle, puis s'avança lentement dans le couloir obscur."
+    @State private var isGeneratingQwenTest = false
+    @State private var qwenTestAudioPath: String?
+    @State private var qwenTestStatus: String?
+    @State private var qwenTestStatusIsError = false
+    @State private var showQwenTestReadyAlert = false
+    @StateObject private var qwenTestPlayer = QwenParagraphPlayer()
     /// Code de langue ISO envoyé à l'API Fish.Audio (`""` = toutes les langues)
     @State private var voiceLanguageCode: String
 
@@ -94,7 +106,39 @@ struct AudioSettingsView: View {
                     }
                     
                     Divider()
-                    
+
+                    // Info MLX Fish-S2 quand sélectionné
+                    if localProvider == .mlxFishS2 {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "cpu.fill")
+                                    .foregroundColor(.accentColor)
+                                Text("MLX Fish S2-Pro — INT8")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                Label("balises", systemImage: "tag.fill")
+                                    .labelStyle(.iconOnly)
+                                    .foregroundColor(.green)
+                                    .font(.caption)
+                                    .help("Lit les balises émotionnelles [whispering], [excited]…")
+                            }
+                            Text("Modèle : `appautomaton/fishaudio-s2-pro-8bit-mlx` (téléchargé automatiquement au 1er run, ~3 Go)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("RAM ~ 5-8 Go en inférence. Confortable sur Mac 16-24 Go.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("Nécessite un sample audio + transcription (onglet Voix).")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(10)
+                        .background(Color.accentColor.opacity(0.1))
+                        .cornerRadius(8)
+
+                        Divider()
+                    }
+
                     // Configuration TTS Audiobook Tool
                     if localProvider == .ttsAudiobookTool {
                         VStack(alignment: .leading, spacing: 12) {
@@ -112,7 +156,7 @@ struct AudioSettingsView: View {
                                                     .labelStyle(.iconOnly)
                                                     .foregroundColor(.green)
                                                     .font(.caption)
-                                                    .help("Lit les balises émotionnelles [whisper], [excited]…")
+                                                    .help("Lit les balises émotionnelles [whispering], [excited]…")
                                             }
                                         }
                                         Text(model.description)
@@ -124,12 +168,141 @@ struct AudioSettingsView: View {
                             }
                             .pickerStyle(.radioGroup)
 
+                            if voiceConfig.ttsModel == .qwen3 {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Picker(
+                                        "Voix Qwen",
+                                        selection: Binding(
+                                            get: {
+                                                if voiceConfig.resolvedQwenVoiceMode == .voiceClone {
+                                                    return "clone"
+                                                }
+                                                if voiceConfig.resolvedQwenVoiceMode == .voiceDesign,
+                                                   let id = voiceConfig.qwenVoiceDesignProfileId {
+                                                    return id.uuidString
+                                                }
+                                                return "custom:\(voiceConfig.resolvedQwenSpeakerId)"
+                                            },
+                                            set: { applyQwenVoiceSelection($0) }
+                                        )
+                                    ) {
+                                        Section("Voix Qwen intégrées") {
+                                            ForEach(VoiceConfig.qwenCustomVoiceSpeakers, id: \.self) { speaker in
+                                                Text("\(speaker) (CustomVoice)")
+                                                    .tag("custom:\(speaker)")
+                                            }
+                                        }
+                                        if !voiceDesignLibrary.profiles.isEmpty {
+                                            Section("Mes voix françaises") {
+                                                ForEach(voiceDesignLibrary.profiles) { profile in
+                                                    Text(profile.name).tag(profile.id.uuidString)
+                                                }
+                                            }
+                                        }
+                                        if voiceConfig.qwenVoiceCloneName != nil {
+                                            Section("Voix clonée") {
+                                                Text(voiceConfig.qwenVoiceCloneName ?? "Voix clonée")
+                                                    .tag("clone")
+                                            }
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+
+                                    HStack {
+                                        Button {
+                                            showVoiceDesignStudio = true
+                                        } label: {
+                                            Label("Créer une voix", systemImage: "slider.horizontal.3")
+                                        }
+                                        .buttonStyle(.borderedProminent)
+
+                                        Button {
+                                            showQwenVoiceClone = true
+                                        } label: {
+                                            Label("Cloner une voix", systemImage: "waveform.badge.plus")
+                                        }
+                                    }
+
+                                    Text(qwenModeSummary)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    if voiceConfig.resolvedQwenVoiceMode == .voiceDesign,
+                                       let description = voiceConfig.qwenVoiceDesignDescription {
+                                        Text(description)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(3)
+                                    }
+                                    Text(voiceConfig.resolvedQwenModelPath)
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+
+                                    Divider()
+
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Tester un paragraphe")
+                                            .font(.headline)
+
+                                        TextEditor(text: $qwenTestText)
+                                            .frame(minHeight: 100)
+                                            .padding(4)
+                                            .background(Color(NSColor.textBackgroundColor))
+                                            .cornerRadius(6)
+
+                                        HStack {
+                                            Button {
+                                                generateQwenParagraphTest()
+                                            } label: {
+                                                HStack {
+                                                    if isGeneratingQwenTest {
+                                                        ProgressView()
+                                                            .controlSize(.small)
+                                                    } else {
+                                                        Image(systemName: "waveform.badge.plus")
+                                                    }
+                                                    Text(isGeneratingQwenTest ? "Génération…" : "Générer")
+                                                }
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .disabled(isGeneratingQwenTest)
+
+                                            Button {
+                                                toggleQwenParagraphPlayback()
+                                            } label: {
+                                                Label(
+                                                    qwenTestPlayer.isPlaying ? "Arrêter" : "Écouter",
+                                                    systemImage: qwenTestPlayer.isPlaying ? "stop.fill" : "play.fill"
+                                                )
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(isGeneratingQwenTest || qwenTestAudioPath == nil)
+                                        }
+
+                                        if let qwenTestStatus {
+                                            Text(qwenTestStatus)
+                                                .font(.caption)
+                                                .foregroundColor(qwenTestStatusIsError ? .red : .green)
+                                        }
+
+                                        Text("L'essai utilise la voix Qwen actuellement sélectionnée, sa vitesse et ses consignes expressives.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .padding(10)
+                                .background(Color.accentColor.opacity(0.08))
+                                .cornerRadius(8)
+                            }
+
                             // Avertissement si le modèle choisi ignore les balises
                             if !voiceConfig.ttsModel.supportsEmotionalTags {
                                 HStack(spacing: 6) {
                                     Image(systemName: "info.circle")
                                         .foregroundColor(.orange)
-                                    Text("Ce modèle ne lit pas les balises émotionnelles : elles seront supprimées du texte avant la génération.")
+                                    Text(voiceConfig.ttsModel == .qwen3
+                                         ? "Qwen reçoit les consignes expressives séparément ; les marqueurs ne sont jamais prononcés."
+                                         : "Ce modèle ne lit pas les balises émotionnelles : elles seront supprimées du texte avant la génération.")
                                         .font(.caption)
                                         .foregroundColor(.orange)
                                 }
@@ -534,6 +707,7 @@ struct AudioSettingsView: View {
             HStack {
                 Button("Annuler") {
                     previewPlayer.stop()
+                    stopQwenParagraphPlayback()
                     dismiss()
                 }
                 .buttonStyle(.bordered)
@@ -542,6 +716,7 @@ struct AudioSettingsView: View {
                 
                 Button("Enregistrer") {
                     previewPlayer.stop()
+                    stopQwenParagraphPlayback()
                     saveSettings()
                     dismiss()
                 }
@@ -550,7 +725,10 @@ struct AudioSettingsView: View {
             .padding()
         }
         .frame(width: 600, height: 700)
-        .onDisappear { previewPlayer.stop() }
+        .onDisappear {
+            previewPlayer.stop()
+            stopQwenParagraphPlayback()
+        }
         .onAppear {
             loadAPIKeys()
             // Recharger les valeurs depuis le binding au cas où elles auraient changé
@@ -568,12 +746,173 @@ struct AudioSettingsView: View {
                 referenceId: $referenceId
             )
         }
+        .sheet(isPresented: $showVoiceDesignStudio) {
+            VoiceDesignStudioView(
+                voiceConfig: $voiceConfig,
+                library: voiceDesignLibrary
+            )
+        }
+        .sheet(isPresented: $showQwenVoiceClone) {
+            QwenVoiceCloneView(voiceConfig: $voiceConfig)
+        }
+        .alert("Exemple généré", isPresented: $showQwenTestReadyAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Le paragraphe audio est prêt. Vous pouvez maintenant l'écouter.")
+        }
     }
     
     // MARK: - Actions
     
     private func loadAPIKeys() {
         fishAudioKey = keychain.get(for: .fishAudio) ?? ""
+    }
+
+    private func generateQwenParagraphTest() {
+        stopQwenParagraphPlayback()
+        let text = qwenTestText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            qwenTestStatusIsError = true
+            qwenTestStatus = "Saisissez un paragraphe à tester."
+            return
+        }
+        var config = voiceConfig
+        config.preferredProvider = .ttsAudiobookTool
+        config.ttsModel = .qwen3
+        guard config.hasValidReference else {
+            qwenTestStatusIsError = true
+            qwenTestStatus = config.missingReferenceHint ?? "La voix Qwen sélectionnée n'est pas prête."
+            return
+        }
+
+        let directory = "\(PathResolver.externalVolumeRoot)/LocalData/QwenVoiceTests"
+        let outputPath = "\(directory)/paragraph-\(UUID().uuidString).wav"
+        let annotatedText = AudioGenerationService.extractQwenInstructions(from: text)
+        let spokenText = AudioGenerationService.stripEmotionalTags(annotatedText.text)
+        guard AudioGenerationService.hasReadableContent(spokenText) else {
+            qwenTestStatusIsError = true
+            qwenTestStatus = "Le paragraphe ne contient aucun texte à lire."
+            return
+        }
+        isGeneratingQwenTest = true
+        qwenTestStatusIsError = false
+        qwenTestStatus = "Chargement de Qwen et génération du paragraphe…"
+
+        Task {
+            do {
+                try FileManager.default.createDirectory(
+                    atPath: directory,
+                    withIntermediateDirectories: true
+                )
+                let isClone = config.resolvedQwenVoiceMode == .voiceClone
+                let wordCount = spokenText.split(whereSeparator: \.isWhitespace).count
+                let tokenBudget = min(2048, max(768, wordCount * 16))
+                try await TTSDaemon.shared.ttsToolGenerate(
+                    model: "qwen3",
+                    text: spokenText,
+                    referenceAudio: isClone ? config.referenceAudioPath : "",
+                    referenceText: isClone ? config.referenceTranscription : "",
+                    output: outputPath,
+                    temperature: -1,
+                    maxRetries: 1,
+                    enableSttValidation: false,
+                    topP: config.topP,
+                    topK: config.topK,
+                    seed: config.resolvedQwenSeed,
+                    qwenInstruction: config.resolvedQwenInstruction(
+                        expressiveInstruction: annotatedText.instruction
+                    ),
+                    qwenModelPath: config.resolvedQwenModelPath,
+                    qwenSpeakerId: config.resolvedQwenVoiceMode == .customVoice
+                        ? config.resolvedQwenSpeakerId
+                        : nil,
+                    qwenLanguage: config.resolvedQwenLanguage,
+                    qwenMaxNewTokens: tokenBudget,
+                    timeoutSeconds: 600
+                )
+                try await AudioSpeedProcessor.apply(speed: config.speedScale, to: outputPath)
+
+                await MainActor.run {
+                    if let previous = qwenTestAudioPath, previous != outputPath {
+                        try? FileManager.default.removeItem(atPath: previous)
+                    }
+                    qwenTestAudioPath = outputPath
+                    isGeneratingQwenTest = false
+                    qwenTestStatusIsError = false
+                    qwenTestStatus = "Paragraphe prêt. Cliquez sur « Écouter »."
+                    showQwenTestReadyAlert = true
+                }
+            } catch {
+                try? FileManager.default.removeItem(atPath: outputPath)
+                await MainActor.run {
+                    isGeneratingQwenTest = false
+                    qwenTestStatusIsError = true
+                    qwenTestStatus = "Échec de génération : \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func toggleQwenParagraphPlayback() {
+        if qwenTestPlayer.isPlaying {
+            stopQwenParagraphPlayback()
+            return
+        }
+        guard let path = qwenTestAudioPath,
+              FileManager.default.fileExists(atPath: path) else {
+            qwenTestStatusIsError = true
+            qwenTestStatus = "Aucun paragraphe audio n'est disponible."
+            return
+        }
+
+        do {
+            try qwenTestPlayer.play(path: path)
+        } catch {
+            qwenTestStatusIsError = true
+            qwenTestStatus = "Lecture impossible : \(error.localizedDescription)"
+        }
+    }
+
+    private func stopQwenParagraphPlayback() {
+        qwenTestPlayer.stop()
+    }
+
+    private func applyQwenVoiceSelection(_ value: String) {
+        if value == "clone" {
+            voiceConfig.qwenVoiceMode = .voiceClone
+            voiceConfig.qwenModelPath = VoiceConfig.defaultQwenVoiceCloneModelPath
+            return
+        }
+        if value.hasPrefix("custom:") {
+            voiceConfig.qwenVoiceMode = .customVoice
+            voiceConfig.qwenSpeakerId = String(value.dropFirst("custom:".count))
+            voiceConfig.qwenModelPath = VoiceConfig.defaultQwenModelPath
+            voiceConfig.qwenVoiceDesignProfileId = nil
+            voiceConfig.qwenVoiceDesignName = nil
+            voiceConfig.qwenVoiceDesignDescription = nil
+            return
+        }
+
+        guard let id = UUID(uuidString: value),
+              let profile = voiceDesignLibrary.profile(id: id) else { return }
+        voiceConfig.qwenVoiceMode = .voiceDesign
+        voiceConfig.qwenVoiceDesignProfileId = profile.id
+        voiceConfig.qwenVoiceDesignName = profile.name
+        voiceConfig.qwenVoiceDesignDescription = profile.voiceDescription
+        voiceConfig.qwenModelPath = VoiceConfig.defaultQwenVoiceDesignModelPath
+        voiceConfig.qwenLanguage = profile.language
+        voiceConfig.speedScale = profile.speedScale ?? 1.0
+    }
+
+    private var qwenModeSummary: String {
+        switch voiceConfig.resolvedQwenVoiceMode {
+        case .voiceDesign:
+            return "Profil VoiceDesign : \(voiceConfig.qwenVoiceDesignName ?? "voix personnalisée")"
+        case .voiceClone:
+            return "Clone Qwen Base : \(voiceConfig.qwenVoiceCloneName ?? "voix clonée")"
+        case .customVoice:
+            return "Checkpoint expressif CustomVoice sur J3THext"
+        }
     }
     
     private func saveSettings() {
@@ -827,11 +1166,57 @@ struct AudioProviderRow: View {
         switch provider {
         case .fishAudio:
             return "API Fish.Audio ($15/1M bytes, lit les balises émotionnelles, qualité constante)"
+        case .mlxFishS2:
+            return "Fish S2-Pro en MLX INT8 (gratuit, ~5-8 Go RAM, lit les balises, M-series)"
         case .ttsAudiobookTool:
-            return "TTS Audiobook Tool (gratuit, local — Fish S2-Pro / Chatterbox / Qwen3)"
+            return "TTS Audiobook Tool (gratuit, local — Fish S2-Pro PyTorch / Chatterbox / Qwen3)"
         }
     }
 }
+
+@MainActor
+private final class QwenParagraphPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    @Published private(set) var isPlaying = false
+
+    private var player: AVAudioPlayer?
+
+    func play(path: String) throws {
+        stop()
+
+        let newPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+        newPlayer.delegate = self
+        newPlayer.prepareToPlay()
+        player = newPlayer
+        isPlaying = newPlayer.play()
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+        isPlaying = false
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(
+        _ player: AVAudioPlayer,
+        successfully flag: Bool
+    ) {
+        Task { @MainActor [weak self] in
+            self?.player = nil
+            self?.isPlaying = false
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(
+        _ player: AVAudioPlayer,
+        error: Error?
+    ) {
+        Task { @MainActor [weak self] in
+            self?.player = nil
+            self?.isPlaying = false
+        }
+    }
+}
+
 
 // MARK: - Create Reference View
 

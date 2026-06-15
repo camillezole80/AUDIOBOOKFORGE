@@ -42,6 +42,10 @@ class AudioGenerationService {
     /// Préserve la ponctuation originale en utilisant une regex pour détecter les fins de phrase.
     /// Les chunks vides ou réduits à de la ponctuation sont éliminés en post-traitement.
     func chunkText(_ text: String, maxWords: Int = 200) -> [String] {
+        return chunkPlainText(text, maxWords: maxWords)
+    }
+
+    private func chunkPlainText(_ text: String, maxWords: Int) -> [String] {
         // Utiliser une regex pour capturer les phrases avec leur ponctuation
         let pattern = "(?:(?!([.!?…]\\s|\\n))[^.!?…\\n])+[.!?…]?"
         let regex = try? NSRegularExpression(pattern: pattern, options: [])
@@ -86,7 +90,7 @@ class AudioGenerationService {
             .filter { Self.hasReadableContent($0) }
     }
 
-    /// Supprime les balises émotionnelles type `[whisper]`, `[excited]`, `[pause]`, etc.
+    /// Supprime les balises émotionnelles type `[whispering]`, `[excited]`, `[break]`, etc.
     /// utilisées pour Fish S2-Pro. Sans ce filtrage, Chatterbox/Qwen3 prononceraient
     /// ces marqueurs comme du texte ou hallucineraient.
     static func stripEmotionalTags(_ text: String) -> String {
@@ -104,14 +108,92 @@ class AudioGenerationService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Extrait les annotations internes `[[qwen:...]]`.
+    /// Elles ne doivent jamais être prononcées : le texte nettoyé part au TTS et
+    /// les instructions sont transmises séparément aux variantes Qwen compatibles.
+    static func extractQwenInstructions(from text: String) -> (text: String, instruction: String?) {
+        let segments = extractQwenInstructionSegments(from: text)
+        let cleanedText = Self.sanitizeForTTS(
+            segments.map(\.text).joined(separator: " ")
+        )
+        let directions = segments.compactMap { segment -> String? in
+            guard let instruction = segment.instruction,
+                  Self.hasReadableContent(segment.text) else {
+                return nil
+            }
+            let anchor = segment.text
+                .split(whereSeparator: \.isWhitespace)
+                .prefix(7)
+                .joined(separator: " ")
+            return "Au passage commençant par « \(anchor) » : \(instruction)"
+        }
+        guard !directions.isEmpty else {
+            return (cleanedText, nil)
+        }
+
+        let performancePlan = """
+        Conserver exactement le même locuteur, le même timbre, la même hauteur de voix, \
+        le même âge vocal et le même accent pendant tout le passage. Lire le texte en une \
+        seule prise continue. Faire varier uniquement l'émotion, l'intensité et le rythme, \
+        avec des transitions progressives et naturelles. \(directions.joined(separator: ". ")).
+        """
+        return (cleanedText, Self.sanitizeForTTS(performancePlan))
+    }
+
+    /// Découpe un texte balisé Qwen en segments parlés. Chaque instruction
+    /// `[[qwen:...]]` s'applique au texte qui la suit, jusqu'à la suivante.
+    static func extractQwenInstructionSegments(
+        from text: String
+    ) -> [(text: String, instruction: String?)] {
+        let pattern = "\\[\\[qwen:(.*?)\\]\\]"
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else {
+            return [(Self.sanitizeForTTS(text), nil)]
+        }
+
+        let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = regex.matches(in: text, options: [], range: fullRange)
+        guard !matches.isEmpty else {
+            return [(Self.sanitizeForTTS(text), nil)]
+        }
+
+        var segments: [(text: String, instruction: String?)] = []
+        var cursor = text.startIndex
+        var activeInstruction: String?
+
+        for match in matches {
+            guard let markerRange = Range(match.range, in: text) else { continue }
+            let spokenText = Self.sanitizeForTTS(String(text[cursor..<markerRange.lowerBound]))
+            if Self.hasReadableContent(spokenText) {
+                segments.append((spokenText, activeInstruction))
+            }
+
+            if match.numberOfRanges > 1,
+               let instructionRange = Range(match.range(at: 1), in: text) {
+                let instruction = String(text[instructionRange])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                activeInstruction = instruction.isEmpty ? nil : instruction
+            }
+            cursor = markerRange.upperBound
+        }
+
+        let trailingText = Self.sanitizeForTTS(String(text[cursor...]))
+        if Self.hasReadableContent(trailingText) {
+            segments.append((trailingText, activeInstruction))
+        }
+        return segments
+    }
+
     /// Texte à envoyer au moteur TTS pour la config voiceConfig donnée.
     /// Si le provider/modèle ne supporte pas les balises, on les retire.
     func textForEngine(_ text: String, voiceConfig: VoiceConfig) -> String {
         let providerSupports = voiceConfig.preferredProvider.supportsEmotionalTags
         let modelSupports: Bool = {
             switch voiceConfig.preferredProvider {
-            case .fishAudio:
-                return true  // Fish.Audio (s2-pro) supporte nativement
+            case .fishAudio, .mlxFishS2:
+                return true  // Fish-S2 (cloud ou MLX local) supporte nativement
             case .ttsAudiobookTool:
                 return voiceConfig.ttsModel.supportsEmotionalTags
             }
@@ -128,8 +210,10 @@ class AudioGenerationService {
         chunkIndex: Int,
         voiceConfig: VoiceConfig
     ) async throws {
+        let qwenAnnotation = Self.extractQwenInstructions(from: text)
+
         // 1) Strip balises si le moteur cible ne les comprend pas
-        let stripped = textForEngine(text, voiceConfig: voiceConfig)
+        let stripped = textForEngine(qwenAnnotation.text, voiceConfig: voiceConfig)
         if stripped.count != text.count {
             logger.debug("Chunk \(chunkIndex): \(text.count - stripped.count) caractères de balises supprimés (moteur incompatible)")
         }
@@ -156,8 +240,8 @@ class AudioGenerationService {
                 voiceConfig: voiceConfig
             )
 
-        case .ttsAudiobookTool:
-            try await generateChunkViaTtsAudiobookTool(
+        case .mlxFishS2:
+            try await generateChunkViaMLX(
                 text: engineText,
                 referenceAudio: referenceAudio,
                 referenceText: referenceText,
@@ -165,7 +249,67 @@ class AudioGenerationService {
                 chunkIndex: chunkIndex,
                 voiceConfig: voiceConfig
             )
+
+        case .ttsAudiobookTool:
+            try await generateChunkViaTtsAudiobookTool(
+                text: engineText,
+                referenceAudio: referenceAudio,
+                referenceText: referenceText,
+                outputPath: outputPath,
+                chunkIndex: chunkIndex,
+                voiceConfig: voiceConfig,
+                qwenInstruction: qwenAnnotation.instruction
+            )
         }
+    }
+
+    /// Génère un chunk audio via MLX Fish-S2-Pro INT8 (local, Apple Silicon).
+    /// L'alias `"fish-s2-pro"` de mlx-speech mappe vers le repo HuggingFace
+    /// `appautomaton/fishaudio-s2-pro-8bit-mlx` (INT8 par défaut).
+    ///
+    /// Passe par `TTSDaemon` : un seul process Python long-vivant pour tout le
+    /// projet (le modèle ~17 Go reste résident entre les chunks au lieu d'être
+    /// rechargé à chaque fois).
+    private func generateChunkViaMLX(
+        text: String,
+        referenceAudio: String,
+        referenceText: String,
+        outputPath: String,
+        chunkIndex: Int,
+        voiceConfig: VoiceConfig
+    ) async throws {
+        logger.info("Generating chunk \(chunkIndex) via MLX Fish-S2 INT8 (daemon)…")
+
+        // max_new_tokens=1024 (≈30s d'audio) au lieu de 2048 : un chunk fait
+        // 200 mots max, donc 1024 est largement suffisant et divise par 2 la
+        // taille du cache KV. Avec 2048, MLX réclamait un buffer Metal de
+        // >16 Go qui dépasse la limite hardware (14,3 Go) sur Apple Silicon.
+        do {
+            try await TTSDaemon.shared.mlxGenerate(
+                text: text,
+                referenceAudio: referenceAudio,
+                referenceText: referenceText,
+                output: outputPath,
+                maxNewTokens: 1024,
+                temperature: voiceConfig.ttsModel == .qwen3 ? -1 : voiceConfig.temperature,
+                lengthScale: voiceConfig.speedScale,
+                timeoutSeconds: 600
+            )
+        } catch let err as TTSDaemon.DaemonError {
+            // Erreurs de lancement / installation : remontées en ttsToolNotInstalled
+            switch err {
+            case .launchFailed(let m):
+                throw AudioGenerationError.ttsToolNotInstalled(m)
+            default:
+                throw AudioGenerationError.chunkGenerationFailed(chunkIndex, err.localizedDescription)
+            }
+        }
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputPath))?[.size] as? Int ?? 0
+        guard fileSize > 1024 else {
+            throw AudioGenerationError.chunkGenerationFailed(chunkIndex, "fichier MLX trop petit (\(fileSize) o)")
+        }
+        logger.info("✅ Chunk \(chunkIndex) généré via MLX Fish-S2 (\(fileSize) o)")
     }
     
     /// Génère l'audio via Fish.Audio API
@@ -214,183 +358,79 @@ class AudioGenerationService {
         logger.info("Chunk \(chunkIndex) generated successfully via Fish.Audio API")
     }
     
-    /// Génère l'audio via TTS Audiobook Tool
+    /// Génère l'audio via TTS Audiobook Tool en passant par le daemon.
+    /// Le modèle (fish-s2 / chatterbox / qwen3) reste chargé entre les chunks.
     private func generateChunkViaTtsAudiobookTool(
         text: String,
         referenceAudio: String,
         referenceText: String,
         outputPath: String,
         chunkIndex: Int,
-        voiceConfig: VoiceConfig
+        voiceConfig: VoiceConfig,
+        qwenInstruction: String?
     ) async throws {
-        logger.info("Generating chunk \(chunkIndex) via TTS Audiobook Tool...")
-        
-        // Déterminer le venv à utiliser selon le modèle
-        let venvName: String
-        switch voiceConfig.ttsModel {
-        case .fishS2Pro:
-            venvName = "venv-fish-s2"
-        case .chatterbox:
-            venvName = "venv-chatterbox"
-        case .qwen3:
-            venvName = "venv-qwen3tts"
-        }
-        
-        let wrapperPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/audiobook_tool_wrapper.py"
-        let pythonPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/\(venvName)/bin/python"
-        
-        // Vérifier que le venv existe
-        guard FileManager.default.fileExists(atPath: pythonPath) else {
-            throw AudioGenerationError.ttsToolNotInstalled(venvName)
-        }
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
-        
-        var arguments = [
-            wrapperPath,
-            "generate",
-            "--model", voiceConfig.ttsModel.rawValue,
-            "--text", text,
-            "--reference-audio", referenceAudio,
-            "--reference-text", referenceText,
-            "--output", outputPath,
-            "--temperature", "\(voiceConfig.temperature)",
-            "--max-retries", "\(voiceConfig.maxRetries)"
-        ]
-        
-        // Ajouter les paramètres optionnels
-        if voiceConfig.enableSttValidation {
-            arguments.append("--enable-stt-validation")
-        }
-        
-        if let topP = voiceConfig.topP {
-            arguments.append(contentsOf: ["--top-p", "\(topP)"])
-        }
-        
-        if let topK = voiceConfig.topK {
-            arguments.append(contentsOf: ["--top-k", "\(topK)"])
-        }
-        
-        if let seed = voiceConfig.seed {
-            arguments.append(contentsOf: ["--seed", "\(seed)"])
-        }
-        
-        process.arguments = arguments
-        
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        
-        // Parser les logs JSON pour la progression
-        let outputHandle = outputPipe.fileHandleForReading
-        outputHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            
-            if let line = String(data: data, encoding: .utf8) {
-                // Parser les lignes JSON
-                for jsonLine in line.components(separatedBy: "\n") {
-                    guard !jsonLine.isEmpty else { continue }
-                    
-                    if let jsonData = jsonLine.data(using: .utf8),
-                       let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                        
-                        if let type = json["type"] as? String {
-                            if type == "progress", let data = json["data"] as? [String: Any] {
-                                if let status = data["status"] as? String {
-                                    self.logger.debug("TTS Tool: \(status)")
-                                }
-                            } else if type == "error", let message = json["message"] as? String {
-                                self.logger.error("TTS Tool Error: \(message)")
-                            }
-                        }
-                    }
-                }
+        logger.info("Generating chunk \(chunkIndex) via TTS Audiobook Tool (daemon)…")
+
+        let model = voiceConfig.ttsModel.rawValue  // "fish-s2" / "chatterbox" / "qwen3"
+        let resolvedInstruction = voiceConfig.ttsModel == .qwen3
+            ? voiceConfig.resolvedQwenInstruction(expressiveInstruction: qwenInstruction)
+            : nil
+        let usesQwen = voiceConfig.ttsModel == .qwen3
+        let usesQwenClone = usesQwen && voiceConfig.resolvedQwenVoiceMode == .voiceClone
+
+        do {
+            try await TTSDaemon.shared.ttsToolGenerate(
+                model: model,
+                text: text,
+                referenceAudio: usesQwenClone ? voiceConfig.referenceAudioPath : (usesQwen ? "" : referenceAudio),
+                referenceText: usesQwenClone ? voiceConfig.referenceTranscription : (usesQwen ? "" : referenceText),
+                output: outputPath,
+                temperature: voiceConfig.ttsModel == .qwen3 ? -1 : voiceConfig.temperature,
+                maxRetries: voiceConfig.maxRetries,
+                enableSttValidation: voiceConfig.enableSttValidation,
+                topP: voiceConfig.topP,
+                topK: voiceConfig.topK,
+                seed: voiceConfig.resolvedQwenSeed,
+                qwenInstruction: resolvedInstruction,
+                qwenModelPath: voiceConfig.ttsModel == .qwen3 ? voiceConfig.resolvedQwenModelPath : nil,
+                qwenSpeakerId: voiceConfig.ttsModel == .qwen3
+                    && voiceConfig.resolvedQwenVoiceMode == .customVoice
+                    ? voiceConfig.resolvedQwenSpeakerId
+                    : nil,
+                qwenLanguage: voiceConfig.ttsModel == .qwen3 ? voiceConfig.resolvedQwenLanguage : nil,
+                timeoutSeconds: 600
+            )
+        } catch let err as TTSDaemon.DaemonError {
+            switch err {
+            case .launchFailed(let m):
+                throw AudioGenerationError.ttsToolNotInstalled(m)
+            default:
+                throw AudioGenerationError.chunkGenerationFailed(chunkIndex, err.localizedDescription)
             }
         }
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        outputHandle.readabilityHandler = nil
-        
-        // Toujours vérifier si le fichier a été créé, même si terminationStatus != 0
-        // Car Python peut retourner un code d'erreur même avec juste des warnings
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-        
-        // Vérifier si le fichier audio a été créé
+
         let fileExists = FileManager.default.fileExists(atPath: outputPath)
-        
-        if process.terminationStatus != 0 && !fileExists {
-            // Vraie erreur : pas de fichier créé
-            logger.error("❌ TTS Tool failed: \(errorOutput)")
-            throw AudioGenerationError.chunkGenerationFailed(chunkIndex, errorOutput)
+        guard fileExists else {
+            throw AudioGenerationError.chunkGenerationFailed(chunkIndex, "fichier de sortie absent après génération")
         }
-        
-        // Si le fichier existe, ignorer les warnings Python
-        if !errorOutput.isEmpty && fileExists {
-            logger.debug("⚠️ TTS Tool warnings (ignored): \(errorOutput.prefix(200))...")
+
+        if usesQwen && abs(voiceConfig.speedScale - 1.0) > 0.001 {
+            logger.debug("Applying Qwen speed \(voiceConfig.speedScale)x to chunk \(chunkIndex)…")
+            try await AudioSpeedProcessor.apply(speed: voiceConfig.speedScale, to: outputPath)
         }
-        
-        // Post-processing optionnel
+
+        // Post-processing optionnel — passe aussi par le daemon (pas de relance Python)
         if voiceConfig.enableNormalization {
-            logger.debug("Normalizing chunk \(chunkIndex)...")
-            try await normalizeViaTtsAudiobookTool(inputPath: outputPath, outputPath: outputPath, venvName: venvName)
+            logger.debug("Normalizing chunk \(chunkIndex)…")
+            try await TTSDaemon.shared.ttsToolNormalize(input: outputPath, output: outputPath, model: model)
         }
-        
+
         if voiceConfig.enableUpsampling {
-            logger.debug("Upsampling chunk \(chunkIndex)...")
-            try await upsampleViaTtsAudiobookTool(inputPath: outputPath, outputPath: outputPath, venvName: venvName)
+            logger.debug("Upsampling chunk \(chunkIndex)…")
+            try await TTSDaemon.shared.ttsToolUpsample(input: outputPath, output: outputPath, model: model)
         }
-        
+
         logger.info("Chunk \(chunkIndex) generated successfully via TTS Audiobook Tool")
-    }
-    
-    /// Normalise l'audio via TTS Audiobook Tool
-    private func normalizeViaTtsAudiobookTool(inputPath: String, outputPath: String, venvName: String) async throws {
-        let wrapperPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/audiobook_tool_wrapper.py"
-        let pythonPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/\(venvName)/bin/python"
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
-        process.arguments = [
-            wrapperPath,
-            "normalize",
-            "--input", inputPath,
-            "--output", outputPath
-        ]
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        if process.terminationStatus != 0 {
-            throw AudioGenerationError.normalizationFailed("TTS Tool normalization failed")
-        }
-    }
-    
-    /// Upsample l'audio via TTS Audiobook Tool
-    private func upsampleViaTtsAudiobookTool(inputPath: String, outputPath: String, venvName: String) async throws {
-        let wrapperPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/audiobook_tool_wrapper.py"
-        let pythonPath = "/Volumes/J3THext/Audiobookforge/external/tts-audiobook-tool/\(venvName)/bin/python"
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
-        process.arguments = [
-            wrapperPath,
-            "upsample",
-            "--input", inputPath,
-            "--output", outputPath
-        ]
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        if process.terminationStatus != 0 {
-            throw AudioGenerationError.normalizationFailed("TTS Tool upsampling failed")
-        }
     }
     
     /// Politique de retry centralisée pour un chunk en échec.
@@ -576,34 +616,27 @@ class AudioGenerationService {
         try listContent.write(toFile: listPath, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(atPath: listPath) }
 
-        // Concat ffmpeg vers un fichier temporaire (jamais sur outputPath directement,
-        // pour ne pas laisser un .wav vide en cas de crash en pleine écriture).
         let tempPath = "\(outputPath).concat.wav"
         try? FileManager.default.removeItem(atPath: tempPath)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
-        process.arguments = [
+        // -loglevel error et -nostdin garantissent que ffmpeg n'écrit presque rien
+        // sur stderr et ne lit pas stdin. Combiné avec le draining asynchrone de la
+        // pipe, ça élimine le risque de deadlock par pipe pleine.
+        let result = try await runFFmpeg(arguments: [
+            "-nostdin",
+            "-loglevel", "error",
             "-f", "concat",
             "-safe", "0",
             "-i", listPath,
             "-c", "copy",
             "-y",
             tempPath
-        ]
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-        process.standardOutput = Pipe()
+        ])
 
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let errOut = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
-                                encoding: .utf8) ?? "—"
+        guard result.status == 0 else {
             try? FileManager.default.removeItem(atPath: tempPath)
-            logger.error("❌ assembleChunks ffmpeg code \(process.terminationStatus) : \(errOut.suffix(400))")
-            throw AudioGenerationError.chunkGenerationFailed(-1, "ffmpeg concat a échoué : \(errOut.suffix(200))")
+            logger.error("❌ assembleChunks ffmpeg code \(result.status) : \(result.stderr.suffix(400))")
+            throw AudioGenerationError.chunkGenerationFailed(-1, "ffmpeg concat a échoué : \(result.stderr.suffix(200))")
         }
 
         // Validation taille minimale (1 chunk WAV mono fait au moins ~20 Ko)
@@ -631,51 +664,62 @@ class AudioGenerationService {
         logger.debug("Normalizing audio: \(filePath)")
 
         let tempPath = "\(filePath).normalizing.wav"
-        // Nettoyage d'un éventuel résidu d'un run précédent
         try? FileManager.default.removeItem(atPath: tempPath)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pathResolver.ffmpegPath)
-        process.arguments = [
+        let result = try await runFFmpeg(arguments: [
+            "-nostdin",
+            "-loglevel", "error",
             "-i", filePath,
             "-af", "loudnorm=I=-1:LRA=11:TP=-1",
             "-ar", "44100",
             "-sample_fmt", "s24le",
-            tempPath,
-            "-y"
-        ]
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-        process.standardOutput = Pipe()  // jeter stdout pour éviter le buffer plein
+            "-y",
+            tempPath
+        ])
 
-        try process.run()
-        process.waitUntilExit()
-
-        // 1. Vérifier le code de sortie ffmpeg
-        guard process.terminationStatus == 0 else {
-            let errOut = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
-                                encoding: .utf8) ?? "—"
+        guard result.status == 0 else {
             try? FileManager.default.removeItem(atPath: tempPath)
-            logger.error("❌ normalizeAudio ffmpeg a échoué (code \(process.terminationStatus)) : \(errOut.suffix(400))")
-            throw AudioGenerationError.normalizationFailed("ffmpeg code \(process.terminationStatus). Le fichier original est préservé.")
+            logger.error("❌ normalizeAudio ffmpeg code \(result.status) : \(result.stderr.suffix(400))")
+            throw AudioGenerationError.normalizationFailed("ffmpeg code \(result.status). Le fichier original est préservé.")
         }
 
-        // 2. Vérifier que le fichier normalisé existe ET a une taille plausible
         let attrs = (try? FileManager.default.attributesOfItem(atPath: tempPath))
         let size = (attrs?[.size] as? Int) ?? 0
         guard size > 1024 else {
             try? FileManager.default.removeItem(atPath: tempPath)
-            logger.error("❌ normalizeAudio : fichier de sortie absent ou trop petit (\(size) o). Original préservé.")
+            logger.error("❌ normalizeAudio : sortie absente/trop petite (\(size) o). Original préservé.")
             throw AudioGenerationError.normalizationFailed("sortie ffmpeg invalide. Le fichier original est préservé.")
         }
 
-        // 3. Swap atomique : remplacer l'original par le normalisé
-        // (replaceItemAt est atomique, plus sûr que remove + move).
         let src = URL(fileURLWithPath: tempPath)
         let dst = URL(fileURLWithPath: filePath)
         _ = try FileManager.default.replaceItemAt(dst, withItemAt: src)
 
         logger.debug("✅ normalizeAudio: \(filePath) (\(size) o)")
+    }
+
+    /// Wrapper ffmpeg sur ProcessRunner (drainage de pipe garanti, voir ProcessRunner.swift).
+    private func runFFmpeg(arguments: [String], timeoutSeconds: Double = 300) async throws -> ProcessRunner.Result {
+        return try await ProcessRunner.run(
+            executable: pathResolver.ffmpegPath,
+            arguments: arguments,
+            timeoutSeconds: timeoutSeconds
+        )
+    }
+
+    /// Pour les autres binaires (Python wrappers, etc.) — alias vers ProcessRunner.run.
+    private func runProcess(
+        executable: String,
+        arguments: [String],
+        timeoutSeconds: Double = 300,
+        stdoutHandler: (@Sendable (Data) -> Void)? = nil
+    ) async throws -> ProcessRunner.Result {
+        return try await ProcessRunner.run(
+            executable: executable,
+            arguments: arguments,
+            timeoutSeconds: timeoutSeconds,
+            stdoutHandler: stdoutHandler
+        )
     }
 
     /// Génère un preview de 30 secondes

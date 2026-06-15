@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>API Demo</title>
+
+  <style>
+    body { font-family: sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px;
+           background: #f0f0f0; color: #333333; }
+    h2 { margin: 0 0 12px 0; padding: 0; font-size: 24px; font-weight: bold; }
+    h3 { margin: 0; padding: 0; font-size: 18px; font-weight: bold; color:#33333394; }
+    .row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 0px; }
+    .row textarea { flex: 1; }
+    .row .buttons { display: flex; flex-direction: column; gap: 8px; }
+    button { padding: 12px 24px; font-family: sans-serif; font-size: 18px; font-weight: bold;
+             cursor: pointer; background: #ffffff; color: #33333394; border: none;
+             border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+    .toggle-btn { padding: 6px 18px; font-size: 14px; }
+    .toggle-btn.active { background: #333333; color: #ffffff; }
+    textarea { width: 100%; height: 160px; font-family: monospace; font-size: 13px;
+               box-sizing: border-box; resize: vertical; padding: 8px;
+               background: #ffffff; color: #333333; border: 1px solid #33333348; }
+    #status-area { font-size: 10px; min-height: 150px; margin: 0 0 18px 0; padding: 8px;
+                   background: #ffffff; color: #333333; border: 1px solid #33333348;
+                   white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+                   box-sizing: border-box; }
+    #response-area { font-size: 10px; height: 250px; }
+    label { display: block; margin: 0 0 8px 0; padding: 0; font-size: 13px;
+            font-family: sans-serif; color: #33333394; }
+  </style>
+</head>
+
+<body>
+
+  <h3>tts-server-tool</h3>
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+    <h2 style="margin: 0;">API Demo</h2>
+    <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: flex-end;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 13px; color: #33333394; white-space: nowrap;">Server local audio:</span>
+        <button id="local-audio-on-btn"  class="toggle-btn">On</button>
+        <button id="local-audio-off-btn" class="toggle-btn">Off</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 13px; color: #33333394; white-space: nowrap;">TTS streaming:</span>
+        <button id="tts-streaming-on-btn"  class="toggle-btn">On</button>
+        <button id="tts-streaming-off-btn" class="toggle-btn">Off</button>
+      </div>
+    </div>
+  </div>
+
+  <p style="margin: 0 0 16px 0; font-size: 14px; color: #33333394;">
+    This demo shows the basic server API mechanics: submit text to <code>/prompt</code>, watch <code>/status</code> update as generation and playback progress, stop queued work with <code>/clear</code>, toggle server-side local audio with <code>/local-audio</code>, and control model-side TTS streaming with <code>/tts-streaming</code>.
+  </p>
+
+  <div class="row">
+    <textarea id="prompt-input" placeholder="Enter prompt…"></textarea>
+    <div class="buttons">
+      <button id="submit-btn">Submit</button>
+      <button id="random-btn" style="font-size: 14px; padding-top:8px; padding-bottom:8px;">Random</button>
+      <button id="clear-btn">Stop</button>
+    </div>
+  </div>
+
+  <div style="padding-bottom: 12px; display: flex; gap: 24px;">
+    <label style="font-size: 12px; margin-top: 0;"><input type="checkbox" checked id="segment-checkbox"> Auto-segment text</label>
+    <label id="eager-label" style="font-size: 12px; margin-top: 0;"><input type="checkbox" checked id="eager-checkbox"> Fast-start first phrase when buffer is low</label>
+  </div>
+
+  <label>Status:</label>
+  <pre id="status-area"></pre>
+
+  <label>Response log:</label>
+  <textarea id="response-area" readonly></textarea>
+
+  <script>
+    const RANDOM_PROMPTS = [
+      "The quick brown fox jumps over the lazy dog.",
+      "In a hole in the ground there lived a hobbit.",
+      "It was the best of times, it was the worst of times.",
+      "To be, or not to be, that is the question.",
+      "All happy families are alike; each unhappy family is unhappy in its own way.",
+      "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.",
+      "Call me Ishmael.",
+      "The sky above the port was the color of television, tuned to a dead channel.",
+      "It was a bright cold day in April, and the clocks were striking thirteen.",
+      "Many years later, as he faced the firing squad, Colonel Aureliano Buendía was to remember that distant afternoon when his father took him to discover ice.",
+      "Mother died today. Or maybe yesterday; I can't be sure.",
+      "I am a sick man. I am a spiteful man.",
+      "My name is Mary Katherine Blackwood. I am eighteen years old, and I live with my sister Constance.",
+      "It was love at first sight. The first time Yossarian saw the chaplain, he fell madly in love with him.",
+      "Last night I dreamt I went to Manderley again. It seemed to me I stood by the iron gate leading to the drive.",
+    ];
+
+    const input          = document.getElementById('prompt-input');
+    const submit         = document.getElementById('submit-btn');
+    const random         = document.getElementById('random-btn');
+    const clear          = document.getElementById('clear-btn');
+    const area           = document.getElementById('status-area');
+    const response       = document.getElementById('response-area');
+    const segment        = document.getElementById('segment-checkbox');
+    const eager          = document.getElementById('eager-checkbox');
+    const eagerLabel     = document.getElementById('eager-label');
+    const localAudioOn   = document.getElementById('local-audio-on-btn');
+    const localAudioOff  = document.getElementById('local-audio-off-btn');
+    const ttsStreamingOn = document.getElementById('tts-streaming-on-btn');
+    const ttsStreamingOff = document.getElementById('tts-streaming-off-btn');
+
+    function updateEagerVisibility() {
+      eagerLabel.style.display = segment.checked ? '' : 'none';
+    }
+    segment.addEventListener('change', updateEagerVisibility);
+    updateEagerVisibility();
+
+    function appendResponseLog(data) {
+      response.value += `${JSON.stringify(data, null, 2)}\n\n`;
+      response.scrollTop = response.scrollHeight;
+    }
+
+    submit.addEventListener('click', async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      const body = { prompt: text };
+      if (segment.checked) body.should_segment = true;
+      if (segment.checked && eager.checked) body.eager_first_segment = true;
+      const res = await fetch('/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      appendResponseLog(data);
+      input.value = '';
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.ctrlKey) submit.click();
+    });
+
+    random.addEventListener('click', () => {
+      input.value = RANDOM_PROMPTS[Math.floor(Math.random() * RANDOM_PROMPTS.length)];
+    });
+
+    clear.addEventListener('click', async () => {
+      const res = await fetch('/clear', { method: 'POST' });
+      const data = await res.json();
+      appendResponseLog(data);
+    });
+
+    function setLocalAudioActive(enabled) {
+      localAudioOn.classList.toggle('active', enabled);
+      localAudioOff.classList.toggle('active', !enabled);
+    }
+
+    function setTtsStreamingActive(enabled, supported = true) {
+      ttsStreamingOn.classList.toggle('active', enabled);
+      ttsStreamingOff.classList.toggle('active', !enabled);
+      ttsStreamingOn.disabled = false;
+      ttsStreamingOn.title = supported ? '' : 'Current TTS engine does not support model-side streaming, but you can still send the API request and inspect the warning response';
+    }
+
+    async function postLocalAudio(enabled) {
+      const res = await fetch('/local-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      appendResponseLog(data);
+      setLocalAudioActive(data.local_audio);
+    }
+
+    async function postTtsStreaming(enabled) {
+      const res = await fetch('/tts-streaming', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      appendResponseLog(data);
+      setTtsStreamingActive(data.tts_streaming, data.tts_streaming_supported);
+    }
+
+    localAudioOn.addEventListener('click',  () => postLocalAudio(true));
+    localAudioOff.addEventListener('click', () => postLocalAudio(false));
+    ttsStreamingOn.addEventListener('click',  () => postTtsStreaming(true));
+    ttsStreamingOff.addEventListener('click', () => postTtsStreaming(false));
+
+    async function pollStatus() {
+      try {
+        const res = await fetch('/status');
+        const data = await res.json();
+        area.textContent = JSON.stringify(data, null, 2);
+        if (typeof data.local_audio === 'boolean') setLocalAudioActive(data.local_audio);
+        if (typeof data.tts_streaming === 'boolean') setTtsStreamingActive(data.tts_streaming, data.tts_streaming_supported);
+      } catch (e) {
+        area.textContent = `Error: ${e.message}`;
+      }
+    }
+
+    pollStatus();
+    setInterval(pollStatus, 1000);
+  </script>
+
+</body>
+</html>

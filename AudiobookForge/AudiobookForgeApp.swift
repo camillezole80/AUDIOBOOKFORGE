@@ -35,6 +35,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Log de la version au démarrage
         AppVersion.logVersion()
+
+        // Prépare immédiatement les profils Qwen, même si l'atelier n'a pas
+        // encore été ouvert.
+        _ = VoiceDesignLibrary.shared
         
         // Activer l'app au premier plan
         NSApp.activate(ignoringOtherApps: true)

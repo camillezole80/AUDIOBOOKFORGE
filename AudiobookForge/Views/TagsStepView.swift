@@ -55,8 +55,30 @@ struct TagsStepView: View {
                 }
             }
 
+            if pipelineVM.project != nil {
+                TaggingModeSelector()
+            }
+
+            // Curseur de densité de balises (s'applique à tous les providers)
+            if pipelineVM.project?.aiConfig.taggingMode.usesAI == true {
+                TagDensitySlider(
+                    density: Binding(
+                        get: { pipelineVM.project?.aiConfig.tagDensity ?? 0.5 },
+                        set: { newValue in
+                            guard var p = pipelineVM.project else { return }
+                            p.aiConfig.tagDensity = newValue
+                            ProjectManager.shared.updateProject(p)
+                            pipelineVM.project = p
+                        }
+                    )
+                )
+                .padding(.horizontal)
+            }
+
             // Sélecteur de chapitre
-            if let project = pipelineVM.project, !project.chapters.isEmpty {
+            if let project = pipelineVM.project,
+               project.aiConfig.taggingMode.usesAI,
+               !project.chapters.isEmpty {
                 Picker("Chapitre", selection: $pipelineVM.selectedChapterIndex) {
                     ForEach(Array(project.chapters.enumerated()), id: \.offset) { index, chapter in
                         Text(chapter.title)
@@ -68,6 +90,25 @@ struct TagsStepView: View {
 
                 // Texte enrichi avec balises colorées
                 if let chapter = project.chapters[safe: pipelineVM.selectedChapterIndex] {
+                    if let direction = chapter.artDirection {
+                        DisclosureGroup("Direction artistique du chapitre") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ArtDirectionRow(label: "Ton", value: direction.overallTone)
+                                ArtDirectionRow(label: "Style", value: direction.literaryStyle)
+                                ArtDirectionRow(label: "Narration", value: direction.narrativeVoice)
+                                ArtDirectionRow(label: "Rythme", value: direction.pacing)
+                                ArtDirectionRow(label: "Arc émotionnel", value: direction.emotionalArc)
+                                ArtDirectionRow(label: "Personnages", value: direction.characterDynamics)
+                                ArtDirectionRow(label: "Dialogues", value: direction.dialogueGuidance)
+                                ArtDirectionRow(label: "Retenue", value: direction.restraintNotes)
+                            }
+                            .padding(.top, 8)
+                        }
+                        .padding()
+                        .background(Color.accentColor.opacity(0.08))
+                        .cornerRadius(8)
+                    }
+
                     TaggedTextView(
                         text: chapter.taggedText ?? chapter.rawText,
                         tagColors: pipelineVM.tagColors
@@ -95,7 +136,7 @@ struct TagsStepView: View {
             }
 
             // Bouton d'injection globale
-            if let project = pipelineVM.project {
+            if let project = pipelineVM.project, project.aiConfig.taggingMode.usesAI {
                 if project.status == .textExtracted || project.status == .tagsInjected {
                     VStack(spacing: 12) {
                         Button(action: {
@@ -194,6 +235,69 @@ struct TagsStepView: View {
     }
 }
 
+struct TaggingModeSelector: View {
+    @EnvironmentObject private var pipelineVM: PipelineViewModel
+
+    var body: some View {
+        if let project = pipelineVM.project {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Type de balisage")
+                    .font(.headline)
+
+                Picker("Type de balisage", selection: Binding(
+                    get: { pipelineVM.project?.aiConfig.taggingMode ?? .none },
+                    set: { pipelineVM.updateTaggingMode($0) }
+                )) {
+                    Text("Sans balisage").tag(TaggingMode.none)
+                    Text("Fish S2").tag(TaggingMode.fishS2)
+                    Text("Qwen3-TTS").tag(TaggingMode.qwen3TTS)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                Text(project.aiConfig.taggingMode.shortDescription)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if project.aiConfig.taggingMode == .qwen3TTS {
+                    Label(
+                        "Le moteur Qwen3-TTS est sélectionné automatiquement. Choisissez ensuite une voix intégrée ou VoiceDesign dans Réglages audio.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                } else if project.aiConfig.taggingMode == .fishS2 {
+                    Label(
+                        "Le moteur Fish S2-Pro est sélectionné automatiquement.",
+                        systemImage: "checkmark.circle"
+                    )
+                    .font(.caption)
+                    .foregroundColor(.green)
+                }
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(8)
+        }
+    }
+}
+
+private struct ArtDirectionRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption.bold())
+            Text(value)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+}
+
 // MARK: - Vue texte enrichi avec balises colorées
 
 struct TaggedTextView: View {
@@ -236,5 +340,72 @@ extension Array {
     subscript(safe index: Int) -> Element? {
         guard index >= 0 && index < count else { return nil }
         return self[index]
+    }
+}
+
+// MARK: - Curseur de densité de balises
+
+/// Slider 0..1 pilotant l'agressivité du balisage par l'IA (Ollama / OpenAI / Anthropic / DeepSeek).
+/// La valeur est passée à `AIConfig.tagDensityInstruction` qui la traduit en consigne textuelle
+/// injectée dans le prompt — identique pour tous les providers.
+struct TagDensitySlider: View {
+    @Binding var density: Double
+
+    private var label: String {
+        switch density {
+        case ..<0.15:  return "Très peu"
+        case 0.15..<0.4: return "Peu"
+        case 0.4..<0.65: return "Modéré"
+        case 0.65..<0.85: return "Dense"
+        default: return "Très dense"
+        }
+    }
+
+    private var labelColor: Color {
+        switch density {
+        case ..<0.15:  return .gray
+        case 0.15..<0.4: return .blue
+        case 0.4..<0.65: return .green
+        case 0.65..<0.85: return .orange
+        default: return .red
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "tag.fill")
+                    .foregroundColor(.secondary)
+                Text("Densité de balises")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                Text(label)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(labelColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(labelColor.opacity(0.15))
+                    .cornerRadius(4)
+            }
+
+            HStack(spacing: 8) {
+                Text("Très peu")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Slider(value: $density, in: 0.0...1.0, step: 0.05)
+                Text("Très dense")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Text("La consigne s'applique aux 4 providers d'IA (Ollama, OpenAI, Anthropic, DeepSeek) et n'a pas d'effet sur les chapitres déjà balisés.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .padding(10)
+        .background(Color(NSColor.controlBackgroundColor))
+        .cornerRadius(8)
     }
 }

@@ -21,6 +21,40 @@ struct ExportStepView: View {
             }
 
             if let project = pipelineVM.project {
+                // Bandeau de synthèse de l'état des chapitres
+                let readyCount = project.chapters.filter {
+                    guard let p = $0.audioFilePath else { return false }
+                    return FileManager.default.fileExists(atPath: p)
+                }.count
+                let totalCount = project.chapters.count
+                let allReady = readyCount == totalCount && totalCount > 0
+
+                HStack(spacing: 10) {
+                    Image(systemName: allReady ? "checkmark.seal.fill"
+                                       : (readyCount > 0 ? "exclamationmark.triangle.fill" : "xmark.octagon.fill"))
+                        .foregroundColor(allReady ? .green : (readyCount > 0 ? .orange : .red))
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(allReady
+                             ? "Tous les chapitres sont prêts"
+                             : (readyCount > 0 ? "Export partiel possible" : "Aucun chapitre prêt à exporter"))
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        Text("\(readyCount)/\(totalCount) chapitre(s) audio disponible(s)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(10)
+                .background((allReady ? Color.green : (readyCount > 0 ? Color.orange : Color.red)).opacity(0.1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke((allReady ? Color.green : (readyCount > 0 ? Color.orange : Color.red)).opacity(0.4), lineWidth: 1)
+                )
+                .cornerRadius(8)
+                .frame(maxWidth: 500)
+
                 VStack(spacing: 20) {
                     // Format
                     VStack(alignment: .leading, spacing: 8) {
@@ -106,12 +140,17 @@ struct ExportStepView: View {
                                     .scaleEffect(0.8)
                             }
                             Image(systemName: "square.and.arrow.up")
-                            Text(pipelineVM.isProcessing ? "Export en cours..." : "Exporter")
+                            Text(pipelineVM.isProcessing
+                                 ? "Export en cours..."
+                                 : (readyCount > 0 ? "Exporter \(readyCount) chapitre(s)" : "Exporter"))
                         }
-                        .frame(maxWidth: 200)
+                        .frame(maxWidth: 220)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(pipelineVM.isProcessing)
+                    .disabled(pipelineVM.isProcessing || readyCount == 0)
+                    .help(readyCount == 0
+                          ? "Générez d'abord au moins un chapitre dans l'onglet Génération"
+                          : "Exporte les \(readyCount) chapitre(s) déjà générés")
 
                     // Progression
                     if pipelineVM.isProcessing {

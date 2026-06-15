@@ -3,6 +3,13 @@ import Foundation
 /// Service d'intégration avec les API d'IA distantes (OpenAI, Anthropic, DeepSeek)
 class RemoteAIService {
     static let shared = RemoteAIService()
+
+    static let fishS2Markers = [
+        "happy", "sad", "angry", "excited", "calm", "nervous", "scared",
+        "worried", "surprised", "hopeful", "determined", "mysterious",
+        "in a hurry tone", "shouting", "whispering", "soft tone",
+        "laughing", "chuckling", "sighing", "gasping", "break", "long-break",
+    ]
     
     private let session: URLSession
     private let logger = Logger.shared
@@ -15,27 +22,78 @@ class RemoteAIService {
     }
     
     // MARK: - Public API
+
+    func analyzeChapter(
+        text: String,
+        title: String,
+        provider: AIProvider,
+        apiKey: String,
+        model: String? = nil
+    ) async throws -> ChapterArtDirection {
+        let prompt = buildAnalysisPrompt(text: text, title: title)
+        let result: String
+        switch provider {
+        case .openai:
+            result = try await enrichWithOpenAI(
+                prompt: prompt,
+                apiKey: apiKey,
+                model: model ?? "gpt-4o-mini",
+                progressHandler: nil
+            )
+        case .anthropic:
+            result = try await enrichWithAnthropic(
+                prompt: prompt,
+                apiKey: apiKey,
+                model: model ?? "claude-3-5-sonnet-20241022",
+                progressHandler: nil
+            )
+        case .deepseek:
+            result = try await enrichWithDeepSeek(
+                prompt: prompt,
+                apiKey: apiKey,
+                model: model ?? "deepseek-v4-flash",
+                progressHandler: nil
+            )
+        case .ollama:
+            throw RemoteAIError.invalidProvider("Ollama should use OllamaService")
+        }
+        return try decodeArtDirection(result)
+    }
     
-    /// Enrichit un texte avec des balises émotionnelles via une API distante
+    /// Enrichit un texte avec des balises émotionnelles via une API distante.
+    /// - Parameter densityInstruction: consigne textuelle pilotant la densité de balises
+    ///   (voir `AIConfig.tagDensityInstruction`). Identique pour tous les providers.
     func injectTags(
         text: String,
         provider: AIProvider,
         apiKey: String,
         model: String? = nil,
+        taggingMode: TaggingMode = .fishS2,
+        densityInstruction: String = "balisage MODÉRÉ : environ 1 balise toutes les 3-4 phrases en moyenne",
+        artDirection: ChapterArtDirection? = nil,
         progressHandler: ((String) -> Void)? = nil
     ) async throws -> String {
+        guard taggingMode.usesAI else { return text }
         logger.info("Starting remote AI enrichment with \(provider.rawValue)")
-        
+
+        let prompt = buildPrompt(
+            text: text,
+            taggingMode: taggingMode,
+            densityInstruction: densityInstruction,
+            artDirection: artDirection
+        )
+        let result: String
         switch provider {
         case .openai:
-            return try await enrichWithOpenAI(text: text, apiKey: apiKey, model: model ?? "gpt-4o-mini", progressHandler: progressHandler)
+            result = try await enrichWithOpenAI(prompt: prompt, apiKey: apiKey, model: model ?? "gpt-4o-mini", progressHandler: progressHandler)
         case .anthropic:
-            return try await enrichWithAnthropic(text: text, apiKey: apiKey, model: model ?? "claude-3-5-sonnet-20241022", progressHandler: progressHandler)
+            result = try await enrichWithAnthropic(prompt: prompt, apiKey: apiKey, model: model ?? "claude-3-5-sonnet-20241022", progressHandler: progressHandler)
         case .deepseek:
-            return try await enrichWithDeepSeek(text: text, apiKey: apiKey, model: model ?? "deepseek-chat", progressHandler: progressHandler)
+            result = try await enrichWithDeepSeek(prompt: prompt, apiKey: apiKey, model: model ?? "deepseek-v4-flash", progressHandler: progressHandler)
         case .ollama:
             throw RemoteAIError.invalidProvider("Ollama should use OllamaService")
         }
+        return try validateEnrichedText(result, original: text, mode: taggingMode)
     }
     
     /// Teste la validité d'une clé API
@@ -52,6 +110,22 @@ class RemoteAIService {
             return true
         } catch {
             logger.error("❌ Connection test failed for \(provider.rawValue): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Vérifie une clé DeepSeek sans lancer un enrichissement facturé.
+    func testDeepSeekConnection(apiKey: String) async -> Bool {
+        guard let url = URL(string: "https://api.deepseek.com/models") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        do {
+            let (_, response) = try await session.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            logger.error("DeepSeek connection test failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -79,7 +153,7 @@ class RemoteAIService {
     // MARK: - OpenAI
     
     private func enrichWithOpenAI(
-        text: String,
+        prompt: String,
         apiKey: String,
         model: String,
         progressHandler: ((String) -> Void)?
@@ -88,8 +162,6 @@ class RemoteAIService {
             throw RemoteAIError.invalidURL
         }
         
-        let prompt = buildPrompt(text: text)
-        
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -97,6 +169,7 @@ class RemoteAIService {
                 ["role": "user", "content": prompt]
             ],
             "temperature": 0.3,
+            "max_tokens": 8192,
             "stream": false
         ]
         
@@ -125,6 +198,10 @@ class RemoteAIService {
               let content = message["content"] as? String else {
             throw RemoteAIError.invalidResponse
         }
+
+        if firstChoice["finish_reason"] as? String == "length" {
+            throw RemoteAIError.truncatedResponse
+        }
         
         logger.info("OpenAI enrichment completed successfully")
         return content
@@ -133,7 +210,7 @@ class RemoteAIService {
     // MARK: - Anthropic
     
     private func enrichWithAnthropic(
-        text: String,
+        prompt: String,
         apiKey: String,
         model: String,
         progressHandler: ((String) -> Void)?
@@ -141,8 +218,6 @@ class RemoteAIService {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
             throw RemoteAIError.invalidURL
         }
-        
-        let prompt = buildPrompt(text: text)
         
         let body: [String: Any] = [
             "model": model,
@@ -186,16 +261,14 @@ class RemoteAIService {
     // MARK: - DeepSeek
     
     private func enrichWithDeepSeek(
-        text: String,
+        prompt: String,
         apiKey: String,
         model: String,
         progressHandler: ((String) -> Void)?
     ) async throws -> String {
-        guard let url = URL(string: "https://api.deepseek.com/v1/chat/completions") else {
+        guard let url = URL(string: "https://api.deepseek.com/chat/completions") else {
             throw RemoteAIError.invalidURL
         }
-        
-        let prompt = buildPrompt(text: text)
         
         let body: [String: Any] = [
             "model": model,
@@ -203,7 +276,11 @@ class RemoteAIService {
                 ["role": "system", "content": "Tu es un directeur artistique spécialisé dans la narration d'audiobooks."],
                 ["role": "user", "content": prompt]
             ],
+            // L'analyse est déjà explicitement structurée en deux passes. Pour
+            // chacune, une réponse directe et déterministe est préférable.
+            "thinking": ["type": "disabled"],
             "temperature": 0.3,
+            "max_tokens": 8192,
             "stream": false
         ]
         
@@ -232,34 +309,296 @@ class RemoteAIService {
               let content = message["content"] as? String else {
             throw RemoteAIError.invalidResponse
         }
+
+        if firstChoice["finish_reason"] as? String == "length" {
+            throw RemoteAIError.truncatedResponse
+        }
         
-        logger.info("DeepSeek enrichment completed successfully")
-        return content
+        let cleaned = cleanModelOutput(content)
+        guard !cleaned.isEmpty else { throw RemoteAIError.emptyResponse }
+        logger.info("DeepSeek enrichment completed successfully with model \(model)")
+        return cleaned
     }
     
     // MARK: - Helpers
     
-    private func buildPrompt(text: String) -> String {
+    private func buildAnalysisPrompt(text: String, title: String) -> String {
         """
+        Lis le chapitre entier avant de répondre. Analyse sa mise en scène pour préparer
+        une narration audio cohérente. Tiens compte des paragraphes précédents et suivants,
+        des transitions, du ton général, du style littéraire, du point de vue, des dialogues,
+        des personnages et de la progression émotionnelle.
+
+        Retourne UNIQUEMENT un objet JSON valide avec exactement ces clés de chaîne :
+        {
+          "overallTone": "ton dominant et nuances",
+          "literaryStyle": "registre, syntaxe, degré de sobriété",
+          "narrativeVoice": "point de vue et distance du narrateur",
+          "pacing": "rythme global et principales transitions",
+          "emotionalArc": "progression émotionnelle du début à la fin",
+          "characterDynamics": "personnages présents et rapports émotionnels",
+          "dialogueGuidance": "différenciation sobre des dialogues",
+          "restraintNotes": "passages à ne pas surjouer et risques de contresens"
+        }
+
+        N'invente aucun fait absent du texte. Chaque valeur doit rester concise.
+
+        Titre : \(title)
+
+        Chapitre complet :
+        \(text)
+        """
+    }
+
+    private func buildPrompt(
+        text: String,
+        taggingMode: TaggingMode,
+        densityInstruction: String,
+        artDirection: ChapterArtDirection?
+    ) -> String {
+        let formatRules: String
+        switch taggingMode {
+        case .none:
+            return text
+        case .fishS2:
+            formatRules = """
+            Insère uniquement ces marqueurs Fish S2 officiels entre crochets :
+            [happy], [sad], [angry], [excited], [calm], [nervous], [scared], [worried],
+            [surprised], [hopeful], [determined], [mysterious], [in a hurry tone],
+            [shouting], [whispering], [soft tone], [laughing], [chuckling], [sighing],
+            [gasping], [break], [long-break].
+            Place le marqueur au début de la phrase concernée.
+            Utilise une émotion principale par phrase et au maximum deux marqueurs compatibles.
+            Espace les changements émotionnels et évite les effets sonores sauf s'ils sont
+            clairement justifiés par le texte.
+            """
+        case .qwen3TTS:
+            formatRules = """
+            Insère des instructions Qwen3-TTS au format exact [[qwen:instruction en français]].
+            Place chaque instruction avant un segment cohérent de 1 à 3 phrases. Elle s'applique
+            à tout ce segment jusqu'à la prochaine instruction.
+            Décris uniquement le jeu vocal momentané : émotion, intensité, volume ou rythme.
+            Ne redéfinis jamais le timbre, l'âge, le genre, l'accent ou l'identité de la voix.
+            Utilise 10 mots maximum et un ou deux attributs compatibles, par exemple
+            [[qwen:Inquiet, voix basse et retenue]].
+            Préfère des consignes sobres et naturelles. N'impose un débit rapide ou lent que
+            lorsque le texte le justifie explicitement.
+            Ne demande jamais de bruitage, de parole ajoutée, de cri ajouté ou de modification
+            du texte original.
+            N'utilise aucune balise Fish et aucun autre format.
+            """
+        }
+
+        let direction = artDirection?.promptContext ?? "Aucune fiche préalable disponible."
+        return """
         Tu es un directeur artistique spécialisé dans la narration d'audiobooks.
-        Tu reçois un passage de texte en français.
-        Ta tâche est d'insérer des balises d'expression Fish Audio S2 Pro directement dans le texte,
-        aux endroits précis où elles améliorent la narration.
+        Tu reçois un chapitre complet en français et sa fiche de direction artistique.
+        Ta tâche est d'ajouter des indications expressives aux endroits précis où elles améliorent la narration.
+
+        FICHE DE DIRECTION ARTISTIQUE :
+        \(direction)
 
         Règles strictes :
+        - Lis le chapitre entier et utilise les paragraphes précédents et suivants pour chaque choix
+        - Respecte le ton général, le style littéraire, le point de vue et l'arc émotionnel de la fiche
+        - Préserve les contrastes : ne transforme pas une tension progressive en urgence permanente
+        - Différencie les dialogues avec sobriété sans caricaturer les personnages
         - Ne modifie JAMAIS le texte original, les mots, la ponctuation ou l'orthographe
-        - Insère uniquement des balises entre crochets : [whisper], [excited], [sad], [pause],
-          [angry], [laughing], [chuckle], [emphasis], [clearing throat], [inhale],
-          [professional broadcast tone], [warm], [tense], [mysterious]
-        - Une balise s'applique à la phrase ou segment qui la suit immédiatement
-        - N'abuse pas des balises : maximum 1 balise tous les 3-4 phrases en moyenne
-        - Pour les dialogues : utilise [excited], [whisper], [angry] etc. selon le contexte émotionnel
-        - Pour la narration neutre : laisse sans balise ou utilise [warm] occasionnellement
+        - \(formatRules)
+        - DENSITÉ DEMANDÉE : \(densityInstruction)
         - Retourne uniquement le texte enrichi, sans commentaires ni explications
 
         Texte à enrichir :
         \(text)
         """
+    }
+
+    private func decodeArtDirection(_ content: String) throws -> ChapterArtDirection {
+        let cleaned = cleanModelOutput(content)
+        guard let start = cleaned.firstIndex(of: "{"),
+              let end = cleaned.lastIndex(of: "}"),
+              start <= end,
+              let data = String(cleaned[start...end]).data(using: .utf8) else {
+            throw RemoteAIError.invalidArtDirection
+        }
+        do {
+            return try JSONDecoder().decode(ChapterArtDirection.self, from: data)
+        } catch {
+            logger.error("Invalid art direction JSON: \(error.localizedDescription)")
+            throw RemoteAIError.invalidArtDirection
+        }
+    }
+
+    private func cleanModelOutput(_ content: String) -> String {
+        var result = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.hasPrefix("```"), result.hasSuffix("```") {
+            result = result.replacingOccurrences(
+                of: "^```(?:text|txt)?\\s*|\\s*```$",
+                with: "",
+                options: .regularExpression
+            )
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func validateEnrichedText(
+        _ content: String,
+        original: String,
+        mode: TaggingMode
+    ) throws -> String {
+        let cleaned = cleanModelOutput(content)
+        guard !cleaned.isEmpty else { throw RemoteAIError.emptyResponse }
+
+        switch mode {
+        case .none:
+            return original
+        case .fishS2:
+            let pattern = "\\[([^\\]\\n]{1,40})\\]"
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern,
+                options: [.caseInsensitive]
+            ) else {
+                throw RemoteAIError.invalidResponse
+            }
+            let range = NSRange(cleaned.startIndex..<cleaned.endIndex, in: cleaned)
+            let allowed = Set(Self.fishS2Markers.map { $0.lowercased() })
+            let invalid = regex.matches(in: cleaned, range: range).compactMap { match -> String? in
+                guard let valueRange = Range(match.range(at: 1), in: cleaned) else { return nil }
+                let value = String(cleaned[valueRange]).lowercased()
+                return allowed.contains(value) ? nil : value
+            }
+            guard invalid.isEmpty else {
+                throw RemoteAIError.invalidMarkers(invalid)
+            }
+
+            let matches = regex.matches(in: cleaned, range: range)
+            let withoutMarkers = regex.stringByReplacingMatches(
+                in: cleaned,
+                range: range,
+                withTemplate: ""
+            )
+            return try validatedOrReconstructedText(
+                cleaned: cleaned,
+                withoutMarkers: withoutMarkers,
+                original: original,
+                matches: matches
+            )
+        case .qwen3TTS:
+            let pattern = "\\[\\[qwen:(.*?)\\]\\]"
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern,
+                options: [.caseInsensitive, .dotMatchesLineSeparators]
+            ) else {
+                throw RemoteAIError.invalidResponse
+            }
+            let range = NSRange(cleaned.startIndex..<cleaned.endIndex, in: cleaned)
+            let instructions = regex.matches(in: cleaned, range: range).compactMap { match -> String? in
+                guard let valueRange = Range(match.range(at: 1), in: cleaned) else { return nil }
+                return String(cleaned[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let invalid = instructions.filter {
+                $0.isEmpty || $0.split(whereSeparator: \.isWhitespace).count > 16
+            }
+            guard invalid.isEmpty else {
+                throw RemoteAIError.invalidMarkers(invalid)
+            }
+
+            let matches = regex.matches(in: cleaned, range: range)
+            let withoutMarkers = regex.stringByReplacingMatches(
+                in: cleaned,
+                range: range,
+                withTemplate: ""
+            )
+            return try validatedOrReconstructedText(
+                cleaned: cleaned,
+                withoutMarkers: withoutMarkers,
+                original: original,
+                matches: matches
+            )
+        }
+    }
+
+    private func validatedOrReconstructedText(
+        cleaned: String,
+        withoutMarkers: String,
+        original: String,
+        matches: [NSTextCheckingResult]
+    ) throws -> String {
+        if withoutMarkers == original {
+            return cleaned
+        }
+
+        // Les LLM normalisent parfois les guillemets, apostrophes, tirets,
+        // espaces insécables ou retours de paragraphe malgré la consigne.
+        // Si la suite exacte des lettres et chiffres reste identique, on jette
+        // leur copie du texte et on replace seulement les marqueurs dans
+        // l'original. Une vraie modification lexicale reste refusée.
+        guard lexicalSignature(withoutMarkers) == lexicalSignature(original) else {
+            logger.error("Enriched text changed lexical content; refusing automatic reconstruction")
+            throw RemoteAIError.originalTextModified
+        }
+
+        let placements = matches.compactMap { match -> (offset: Int, marker: String)? in
+            guard let markerRange = Range(match.range, in: cleaned) else { return nil }
+            let prefix = String(cleaned[..<markerRange.lowerBound])
+                .replacingOccurrences(
+                    of: "\\[\\[qwen:.*?\\]\\]|\\[[^\\]\\n]{1,40}\\]",
+                    with: "",
+                    options: [.regularExpression, .caseInsensitive]
+                )
+            return (
+                lexicalOffset(in: prefix),
+                String(cleaned[markerRange])
+            )
+        }
+
+        let positionedMarkers = placements.map {
+            (
+                characterOffset: insertionCharacterOffset(in: original, lexicalOffset: $0.offset),
+                marker: $0.marker
+            )
+        }
+        var reconstructed = original
+        for placement in positionedMarkers.reversed() {
+            let index = reconstructed.index(
+                reconstructed.startIndex,
+                offsetBy: placement.characterOffset
+            )
+            let suffix = reconstructed[index...]
+            let separator = suffix.first?.isWhitespace == true ? "" : " "
+            reconstructed.insert(contentsOf: placement.marker + separator, at: index)
+        }
+        logger.warning("DeepSeek typography normalized; markers projected back onto exact original text")
+        return reconstructed
+    }
+
+    private func lexicalSignature(_ text: String) -> String {
+        String(text.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0)
+        })
+    }
+
+    private func lexicalOffset(in text: String) -> Int {
+        text.unicodeScalars.reduce(0) {
+            $0 + (CharacterSet.alphanumerics.contains($1) ? 1 : 0)
+        }
+    }
+
+    private func insertionCharacterOffset(in text: String, lexicalOffset target: Int) -> Int {
+        var count = 0
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            let lexicalCount = character.unicodeScalars.reduce(0) {
+                $0 + (CharacterSet.alphanumerics.contains($1) ? 1 : 0)
+            }
+            if lexicalCount > 0 && count >= target {
+                return text.distance(from: text.startIndex, to: index)
+            }
+            count += lexicalCount
+            index = text.index(after: index)
+        }
+        return text.count
     }
     
     private func estimateTokens(text: String) -> Int {
@@ -279,6 +618,11 @@ enum RemoteAIError: Error, LocalizedError {
     case invalidProvider(String)
     case apiError(Int, String)
     case missingAPIKey
+    case emptyResponse
+    case truncatedResponse
+    case originalTextModified
+    case invalidMarkers([String])
+    case invalidArtDirection
     
     var errorDescription: String? {
         switch self {
@@ -292,6 +636,16 @@ enum RemoteAIError: Error, LocalizedError {
             return "Erreur API (\(code)) : \(message)"
         case .missingAPIKey:
             return "Clé API manquante"
+        case .emptyResponse:
+            return "L'API a retourné une réponse vide"
+        case .truncatedResponse:
+            return "La réponse de l'API a été tronquée avant la fin du chapitre"
+        case .originalTextModified:
+            return "L'API a modifié le texte original au lieu d'ajouter uniquement des balises"
+        case .invalidMarkers(let markers):
+            return "L'API a produit des balises invalides : \(markers.joined(separator: ", "))"
+        case .invalidArtDirection:
+            return "L'API n'a pas produit une fiche de direction artistique JSON valide"
         }
     }
 }

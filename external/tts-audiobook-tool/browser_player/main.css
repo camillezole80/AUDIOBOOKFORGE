@@ -1,0 +1,796 @@
+/* Shared */
+
+.noTransition {
+    transition: none !important;
+}
+
+.noPointerEvents {
+    pointer-events: none;
+}
+
+.bodyNoScroll {
+    overflow: hidden;
+}
+
+.disabled {
+    pointer-events: none;
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.buttonText {
+    font-size: 18px;
+    font-family: sans-serif;
+    font-weight: bold;
+}
+
+.bigTitleText {
+    font-size: 24px;
+    font-family: sans-serif;
+    font-weight: bold;
+    color: var(--color-text-dim);
+}
+
+.titleText {
+    font-size: 24px;
+    font-family: sans-serif;
+    font-weight: bold;
+    color: var(--color-text-dim);
+}
+@media (max-width: 600px) {
+    .titleText {
+        font-size: 18px;
+    }
+}
+
+.iconButton {
+    width: 42px;
+    height: 42px;
+    padding:6px;
+    border-radius:8px;
+    background-color: var(--color-content-bg);
+    box-shadow: 0 4px 8px var(--color-shadow);
+    cursor: pointer;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+.iconButton svg path {
+    fill: var(--color-text-dim);
+}
+
+.chromelessButton {
+    width: 42px;
+    height: 42px;
+    padding:6px;
+    border-radius:8px;
+    cursor: pointer;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+.chromelessButton svg path {
+    fill: var(--color-text-dim);
+}
+
+.expandingButton {
+    border: none;
+    border-radius: 8px;
+    background-color: var(--color-content-bg);
+    box-shadow: 0 4px 8px var(--color-shadow);
+    cursor: pointer;
+
+    display: inline-flex;
+    align-items: center;
+
+    overflow: hidden;
+}
+
+.expandingButton .graphic {
+    flex-shrink: 0;
+    width: 42px;
+    height: 42px;
+    padding:6px;
+}
+
+.expandingButton .label {
+    color: var(--color-text-dim);
+    white-space: nowrap;
+
+    /* Anim */
+    max-width: 100px;
+    padding-left: 12px;
+    padding-right: 6px;
+    opacity: 1;
+    transition: all 0.3s linear;
+}
+
+:root[data-ui-panel-button-collapse="true"] .expandingButton .label {
+    max-width: 0px;
+    padding-left: 0;
+    padding-right: 0;
+    opacity: 0;
+}
+
+.fixedHolder {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+
+    /* Dynamic viewport height re: mobile */
+    height: calc(100dvh);
+    /* Back compat */
+    @supports not (height: 100dvh) {
+        height: 100vh; 
+    }
+
+    pointer-events: none;
+}
+
+/* ------------------------------------------------ */
+
+html {
+    -webkit-tap-highlight-color: transparent; /* Chrome, Safari, Edge */
+
+    /* reserve space for scrollbar to prevent layout shifts (windows chrome desktop, etc) */
+    /* color does not match bg post-scrim, revisit or not, ugh*/
+    /* scrollbar-gutter: stable;  */
+}
+
+html {
+    box-sizing: border-box;
+  }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--color-bg);
+}
+
+*, *::before, *::after {
+    box-sizing: inherit;
+}
+
+* {
+    touch-action: manipulation;
+}
+
+/* --------------------------------------------- */
+
+#playerOverlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding-bottom:18px; /* extra hit area for rollover */
+}
+
+#playerHolder {
+    display: flex;
+    box-shadow: 0 4px 8px var(--color-shadow);
+
+    transform: translateY(-100%);
+    transition: transform 0.3s ease-out;
+}
+
+#playerHolder.showing {
+    transform: translateY(0%);
+}
+
+#loadHolder {
+    padding-top:62px; /* clear player + extra */
+    padding-left: 18px;
+    padding-right: 18px;
+    width: calc(100% - 36px);
+    max-width: 800px;
+    margin-left:auto;
+    margin-right:auto;
+    text-align: center;
+}
+
+.loadPrompt {
+    font-size: 16px;
+    font-family: sans-serif;
+
+    color: var(--color-text-dim);
+    margin-top:18px;
+    margin-bottom: 12px;
+}
+@media (max-width: 600px) {
+    .loadPrompt {
+        font-size: 14px;
+    }
+}
+
+.loadButtonsLine {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 24px;
+}
+@media (max-width: 600px) {
+    .loadButtonsLine {
+        gap: 12px;
+    }
+}
+
+.loadButton {
+    padding: 12px 24px;
+    background: var(--color-content-bg);
+    color: var(--color-text-dim);
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 4px 8px var(--color-shadow);
+}
+.loadButton:focus {
+    outline: 3px solid var(--color-segment-highlight);
+}
+
+@media (max-width: 600px) {
+    .loadButton {
+        padding: 12px 12px;
+    }
+}
+
+.urlInputWrapper {
+    width: 100%;
+    position: relative;
+}
+
+#loadUrlInput {
+    width: 100%;
+    font-size: 18px;
+    font-family: sans-serif;
+    font-weight: bold;
+    color: var(--color-text);
+    background: var(--color-content-bg);
+    padding: 12px 48px 12px 18px;
+    border-radius: 8px;
+    border: 0px;
+    z-index: 999;
+}
+
+#loadUrlInput::placeholder {
+    font-size: 18px;
+    font-family: sans-serif;
+    font-weight: bold;
+    color: var(--color-text-dim);
+}
+#loadUrlInput:focus {
+    outline: 3px solid var(--color-segment-highlight);
+}
+
+#loadUrlIcon {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    opacity: 0.66;
+    cursor: pointer;
+}
+#loadUrlIcon svg {
+    fill: var(--color-text-dim);
+    width: 24px;
+    height: 24px;
+}
+
+#lastFileNameLabel {
+    display: none;
+    margin-top:32px;
+    font-size: 16px;
+    font-family: sans-serif;
+    font-weight: normal;
+    color: var(--color-text-dim);
+}
+@media (max-width: 600px) {
+    #lastFileNameLabel {
+        font-size: 12px;
+    }
+}
+#lastFileNameText {
+    margin-top:4px;
+}
+
+/* --------------------------------------- */
+
+#noSleepInfo {
+    height:36px;
+}
+[data-sleep="on"] #noSleepInfo  {
+    display: none;
+}
+
+#sleepInfo {
+    display: none;
+}
+[data-sleep="on"] #sleepInfo {
+    width:100%;
+    margin-top:14px;
+    margin-bottom:14px;
+    font-size:16px;
+    font-weight: bold;
+    color: var(--color-text-dim);
+    font-family: sans-serif;
+
+    display:flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    gap:6px;
+}
+#sleepInfo svg {
+    width: 36px;
+    height: 36px;
+    fill: var(--color-text-dim);
+}
+
+
+#currentFileName {
+    margin-left: 36px;
+    width: calc(100% - 72px);
+    margin-bottom: 16px;
+    font-family: sans-serif;
+    font-size: 14px;
+    color: var(--color-text-dim);
+    text-align: center;
+    overflow-wrap: break-word;
+    word-break: break-word; /* Safari fallback */
+}
+@media (max-width: 600px) {
+    #currentFileName {
+        font-size: 12px;
+        margin-left: 18px;
+        width: calc(100% - 36px);
+    }
+}
+
+/* -------------------------------------- */
+/* ui panel button, ui overlay, ui panel  */
+
+#scrim {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+
+    width: 100vw;
+
+    /* Dynamic viewport height re: mobile */
+    height: calc(100dvh);
+
+    @supports not (height: 100dvh) {
+        height: 100vh; /* Back compat */
+    }
+
+    background: #00000066;
+    opacity: 0;
+    transition: opacity 0.3s ease-out;
+}
+:root[data-theme="dark"] #scrim {
+    background: #00000088;
+}
+#scrim.showing {
+    opacity: 1;
+}
+
+.bottomButtonsColumn {
+    pointer-events: auto;
+
+    position: absolute;
+    bottom: 12px;
+    right: 0;
+
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-end;
+}
+
+#bookmarkButton {
+    display: none; /* inline block */
+    margin-right:12px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+#bookmarkButton.showing {
+    opacity: 1;
+}
+#bookmarkButton svg path {
+    fill: var(--color-text-dim);
+}
+
+#menuButton {
+    margin-right:12px;
+}
+#menuButton svg path {
+    fill: var(--color-text-dim);
+}
+
+#menuPanel {
+    pointer-events: auto;
+
+    display: none; /* flex */
+    flex-direction: column;
+    gap: 16px;
+
+    padding: 12px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    border-bottom-left-radius: 8px;
+    background: var(--color-bg);
+    box-shadow: 0 4px 8px var(--color-shadow);
+
+    /* rem, default state is not-showing*/
+    transform: translateX(calc(100% + 12px));
+    transition: transform 0.3s ease-out;
+}
+#menuPanel.showing {
+    transform: translateX(0);
+}
+
+/* ------------------- */
+
+#bookmarkPanel {
+    pointer-events: auto;
+
+    display: none; /* flex */
+    flex-direction: column;
+    width: 66%;
+    max-width:500px;
+    height: 100%;
+    padding:18px;
+    background: var(--color-content-bg);
+    color: var(--color-text-dim);
+    overflow: auto;
+
+    transform: translateX(calc(-100%));
+    transition: transform 0.3s ease-out;
+}
+@media (max-width: 600px) {
+    #bookmarkPanel {
+        width: 75%;
+    }
+}
+#bookmarkPanel.showing {
+    transform: translateX(0);
+}
+
+.bookmarkTitle {
+    flex: 0 0 auto;
+    margin-bottom:18px;
+}
+
+#bookmarkAddButton {
+    flex: 0 0 auto;
+    margin-bottom:16px;
+    padding-right:12px;
+}
+#bookmarkAddDescLine {
+    display: flex;
+    align-items: baseline;
+}
+#bookmarkAddDesc {
+    flex: 1;
+    font-style: italic;
+    font-size: 14px; /* TODO: make text size variables small medium large */
+    font-weight: normal;
+    font-family: serif;
+    color: var(--color-text-dim);
+    margin-top:8px;
+
+    white-space: nowrap;
+    overflow-x: hidden;
+    text-overflow: ellipsis;
+}
+
+#bookmarkList {
+    flex: 1;
+    width: 100%;
+}
+
+.bookmarkItem {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+}
+.bookmarkItemText {
+    flex: 1;
+
+    font-family: serif;
+    font-size: 18px; /* TODO: make text size variables - small medium large */
+    color: var(--color-text-dim);
+    padding:10px 0 10px 0;
+    cursor:pointer;
+
+    white-space: nowrap;
+    overflow-x: hidden;
+    text-overflow: ellipsis;
+}
+.bookmarkItemText {
+    @media (max-width: 600px) {
+        --book-text-size: 14px;
+    }
+}
+
+.bookmarkLocation {
+    flex: 0 0 auto;
+
+    font-family: sans-serif;
+    font-size: 14px;
+    color: var(--color-text-dim);
+    opacity: 0.5;
+}
+@media (max-width: 600px) {
+    .bookmarkLocation {
+        font-size: 12px;
+    }
+}
+.bookmarkItemDelete {
+    flex: 0 0 auto;
+
+    width:42px;
+    height:42px;
+    padding: 6px;
+    cursor:pointer;
+}
+.bookmarkItemDelete svg {
+    width: 100%;
+    height: 100%;
+    fill: var(--color-text-dim);
+}
+.bookmarkItemNone {
+    padding-top:12px;
+}
+
+/* ------------------- */
+
+#toast {
+    position:absolute;
+    bottom:0;
+
+    left:0px;
+    right:0px;
+    height: 54px;
+    padding: 18px;
+
+    color:  var(--color-text-dim);
+    background: var(--color-bg);
+    text-align: center;
+
+    pointer-events: auto; /* blocks */
+    cursor: pointer;
+
+    transform: translateY(calc(100%));
+    display: none;
+    transition: transform 0.3s ease;
+}
+
+#toast.showing {
+    display: block;
+    transform: translateY(00px);
+    /* shd rly be 0, ofc */
+}
+
+/* ------------------- */
+
+#loadingOverlay {
+    display: none; /* flex */
+    align-items: center;
+    justify-content: center;
+
+    position: fixed;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    background: #00000088;
+
+    opacity: 0;
+    transition: opacity 0.3s ease-out;
+}
+#loadingOverlay.showing {
+    opacity: 1;
+}
+
+.loadingPrompt {
+    background: var(--color-bg);
+    color: var(--color-text);
+    padding: 24px 48px 24px 48px;
+    border-radius:8px;
+    box-shadow: 0 4px 8px var(--color-shadow);
+}
+
+#dragOverlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: var(--color-segment-highlight);
+    opacity:0.5;
+    display: none; 
+    z-index: 9999;
+    pointer-events: none; 
+}
+
+/* ------------------- */
+
+#outerTextHolder {
+    width: calc(100% - 36px);
+    max-width: 800px;
+    padding: 0 18px 18px 18px;
+    margin-left: auto;
+    margin-right: auto;
+}
+@media (max-width: 600px) {
+    #outerTextHolder {
+        width: 100%;
+        padding: 0;
+    }
+}
+
+/* ------------------- */
+
+#textHolder {
+    display: none;
+    font-family: serif;
+    font-size: var(--book-text-size);
+    line-height: 1.6;
+    color: var(--color-text);
+    background-color: var(--color-content-bg);
+    margin:0;
+    padding: 36px;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px var(--color-shadow);
+
+    white-space: pre-wrap; /* Honor line breaks and wrap text */
+    overflow-wrap: break-word;
+    word-break: break-word;
+
+    max-width: 100%;
+}
+@media (max-width: 600px) {
+    #textHolder {
+        padding: 18px;
+        border-radius: 0;
+        box-shadow: none;
+        }
+}
+
+#textHolder {
+    /*
+    Prevent i-bar cursor over non-hot text
+    (ie, white space between adjacent TextSegments, and non-matched STT text)
+    */
+    cursor: default;
+
+    /* Anchor for bookmark indicators in the gutter */
+    position:relative;
+}
+
+span.highlight {
+    background-color: var(--color-segment-highlight);
+    color: var(--color-text);
+    padding: 0.1em 0;
+    border-radius: 3px;
+    transition: background-color 0.3s ease, color 0.3s ease;
+
+    display: inline;
+    box-decoration-break: clone;
+}
+[data-player-status="pause"] span.highlight {
+    background-color: var(--color-segment-hover);
+}
+[data-player-status="none"] span.highlight {
+    background-color: var(--color-segment-hover);
+}
+
+span.bookmark::before {
+
+    content: "";
+
+    position: absolute;
+    left: calc( var(--book-text-size) * -1.6);
+    width: calc( var(--book-text-size) * 1.5);
+    height: calc( var(--book-text-size) * 1.5);
+    margin-top: calc( var(--book-text-size) * 0.15);
+
+    background-color: var(--color-segment-hover); 
+    
+    -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'><path d='M200-120v-640q0-33 23.5-56.5T280-840h400q33 0 56.5 23.5T760-760v640L480-240 200-120Zm80-122 200-86 200 86v-518H280v518Zm0-518h400-400Z'/></svg>");
+    mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'><path d='M200-120v-640q0-33 23.5-56.5T280-840h400q33 0 56.5 23.5T760-760v640L480-240 200-120Zm80-122 200-86 200 86v-518H280v518Zm0-518h400-400Z'/></svg>");
+    
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-size: contain;
+    mask-size: contain;    
+
+    /* top: 50%; 
+    transform: translateY(-50%);     */
+}
+
+span.bookmark.highlight::before {
+    background-color: var(--color-segment-highlight);
+}
+
+@media (pointer: fine) {
+    /* hover effect only when is pointer device */
+    #textHolder span.hasAudio:hover {
+        background-color: var(--color-segment-hover);
+        padding: 0.1em 0;
+        border-radius: 3px;
+        cursor: pointer;
+    }
+    /* hovering over currently highlighted segment shouldn't change its bg color */
+    #textHolder span:hasAudio.highlight:hover {
+        border-radius: 3px;
+        background-color: var(--color-segment-highlight);
+    }
+
+    #textHolder span.noAudio:hover {
+        background-color: var(--color-bg);
+        padding: 0.1em 0;
+        border-radius: 3px;
+        cursor: pointer;
+    }
+}
+
+#segmentColorsButton svg path.colored {
+    fill: var(--color-segment-highlight); /* hah */
+}
+
+/* ------------------- */
+
+#helpHolder {
+    display: flex;
+    justify-content: center;
+}
+#helpHolder table {
+    font-size: 16px;
+    font-family: sans-serif;
+    color: var(--color-text-dim);
+    margin:0;
+    padding-top: 36px;
+    padding-bottom: 36px;
+}
+@media (max-width: 600px) {
+    #helpHolder table {
+        padding: 18px;
+    }
+}
+
+#helpHolder thead th {
+    padding-bottom: 16px;
+}
+#helpHolder td {
+    text-align: left;
+    padding-bottom: 8px;
+}
+#helpHolder td:first-child {
+    text-align: left;
+    padding-right: 32px;
+}
+#helpHolder td.help2 {
+    padding-top:16px;
+    
+}
+
+#githubCorner {
+    position:fixed;
+    right: 0;
+    top: 0;
+    opacity:0.66;
+    cursor:pointer;
+    z-index: 999;
+}
+#githubCorner svg {
+    fill: var(--color-text-dim);
+}

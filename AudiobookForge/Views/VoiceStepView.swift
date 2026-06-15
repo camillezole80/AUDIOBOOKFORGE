@@ -8,8 +8,11 @@ struct VoiceStepView: View {
     @State private var showAudioPicker = false
     @State private var previewReady = false
     @State private var showAudioSettings = false
+    @State private var showVoiceDesignStudio = false
+    @State private var showQwenVoiceClone = false
     @State private var audioPlayer: AVAudioPlayer?
     @State private var isPlayingPreview = false
+    @StateObject private var voiceDesignLibrary = VoiceDesignLibrary.shared
 
     var body: some View {
         VStack(spacing: 24) {
@@ -22,7 +25,9 @@ struct VoiceStepView: View {
                     Text("Configuration de la voix")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("Importez un sample vocal de référence (10-30 secondes)")
+                    Text(pipelineVM.project?.voiceConfig.ttsModel == .qwen3
+                         ? "Sélectionnez une voix Qwen intégrée ou VoiceDesign"
+                         : "Importez un sample vocal de référence (10-30 secondes)")
                         .foregroundColor(.secondary)
                 }
                 
@@ -47,52 +52,86 @@ struct VoiceStepView: View {
             // Import du sample vocal
             if let project = pipelineVM.project {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Fichier audio
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Sample de référence")
-                            .font(.headline)
+                    TaggingModeSelector()
 
-                        HStack {
-                            if !project.voiceConfig.referenceAudioPath.isEmpty {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                Text(URL(fileURLWithPath: project.voiceConfig.referenceAudioPath).lastPathComponent)
-                                    .lineLimit(1)
-                            } else {
-                                Image(systemName: "music.note")
-                                    .foregroundColor(.secondary)
-                                Text("Aucun fichier sélectionné")
-                                    .foregroundColor(.secondary)
-                            }
+                    if project.voiceConfig.ttsModel == .qwen3 {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Voix Qwen active", systemImage: "waveform.badge.plus")
+                                .font(.headline)
 
-                            Spacer()
+                            Text(qwenVoiceDescription(project.voiceConfig))
+                                .font(.body)
+                                .fontWeight(.medium)
 
-                            Button("Parcourir...") {
-                                showAudioPicker = true
+                            Text(qwenVoiceModeDescription(project.voiceConfig))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            HStack {
+                                Button("Choisir une voix Qwen") {
+                                    showAudioSettings = true
+                                }
+
+                                Button("Créer une voix Qwen") {
+                                    showVoiceDesignStudio = true
+                                }
+                                .buttonStyle(.borderedProminent)
+
+                                Button("Cloner une voix Qwen") {
+                                    showQwenVoiceClone = true
+                                }
                             }
                         }
                         .padding()
-                        .background(Color(NSColor.controlBackgroundColor))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.accentColor.opacity(0.1))
                         .cornerRadius(8)
-                    }
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sample de référence")
+                                .font(.headline)
 
-                    // Transcription
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Transcription exacte du sample")
-                            .font(.headline)
+                            HStack {
+                                if !project.voiceConfig.referenceAudioPath.isEmpty {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text(URL(fileURLWithPath: project.voiceConfig.referenceAudioPath).lastPathComponent)
+                                        .lineLimit(1)
+                                } else {
+                                    Image(systemName: "music.note")
+                                        .foregroundColor(.secondary)
+                                    Text("Aucun fichier sélectionné")
+                                        .foregroundColor(.secondary)
+                                }
 
-                        TextEditor(text: Binding(
-                            get: { project.voiceConfig.referenceTranscription },
-                            set: { pipelineVM.setVoiceReference(
-                                audioPath: project.voiceConfig.referenceAudioPath,
-                                transcription: $0
-                            )}
-                        ))
-                        .font(.body)
-                        .frame(height: 80)
-                        .padding(4)
-                        .background(Color(NSColor.textBackgroundColor))
-                        .cornerRadius(6)
+                                Spacer()
+
+                                Button("Parcourir...") {
+                                    showAudioPicker = true
+                                }
+                            }
+                            .padding()
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(8)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Transcription exacte du sample")
+                                .font(.headline)
+
+                            TextEditor(text: Binding(
+                                get: { project.voiceConfig.referenceTranscription },
+                                set: { pipelineVM.setVoiceReference(
+                                    audioPath: project.voiceConfig.referenceAudioPath,
+                                    transcription: $0
+                                )}
+                            ))
+                            .font(.body)
+                            .frame(height: 80)
+                            .padding(4)
+                            .background(Color(NSColor.textBackgroundColor))
+                            .cornerRadius(6)
+                        }
                     }
 
                     // Paramètres
@@ -163,15 +202,12 @@ struct VoiceStepView: View {
                         Divider()
                             .padding(.vertical, 8)
                         
-                        // Bouton pour passer à l'étape suivante :
-                        // - si le moteur lit les balises → étape Balises (optionnelle).
-                        // - sinon → directement Génération.
-                        let supportsTags = project.voiceConfig.engineSupportsTags
+                        let usesTags = project.aiConfig.taggingMode.usesAI
                         Button(action: {
-                            pipelineVM.currentStep = supportsTags ? .tags : .generation
+                            pipelineVM.currentStep = usesTags ? .tags : .generation
                         }) {
                             HStack {
-                                Text(supportsTags ? "Passer aux balises (optionnel)" : "Passer à la génération")
+                                Text(usesTags ? "Passer aux balises" : "Passer à la génération")
                                 Image(systemName: "arrow.right")
                             }
                             .frame(maxWidth: 280)
@@ -181,7 +217,7 @@ struct VoiceStepView: View {
                         .help(project.voiceConfig.missingReferenceHint ?? "")
 
                         // Raccourci : sauter à la génération même quand les balises sont disponibles
-                        if supportsTags && project.voiceConfig.hasValidReference {
+                        if usesTags && project.voiceConfig.hasValidReference {
                             Button(action: { pipelineVM.currentStep = .generation }) {
                                 Text("Sauter le balisage et générer directement")
                                     .font(.caption)
@@ -223,9 +259,48 @@ struct VoiceStepView: View {
                 defaultLanguage: pipelineVM.project?.metadata.language ?? "fr"
             )
         }
+        .sheet(isPresented: $showVoiceDesignStudio) {
+            VoiceDesignStudioView(
+                voiceConfig: Binding(
+                    get: { pipelineVM.project?.voiceConfig ?? VoiceConfig() },
+                    set: { pipelineVM.updateVoiceConfig($0) }
+                ),
+                library: voiceDesignLibrary
+            )
+        }
+        .sheet(isPresented: $showQwenVoiceClone) {
+            QwenVoiceCloneView(
+                voiceConfig: Binding(
+                    get: { pipelineVM.project?.voiceConfig ?? VoiceConfig() },
+                    set: { pipelineVM.updateVoiceConfig($0) }
+                )
+            )
+        }
     }
     
     // MARK: - Audio Player
+
+    private func qwenVoiceDescription(_ config: VoiceConfig) -> String {
+        switch config.resolvedQwenVoiceMode {
+        case .voiceDesign:
+            return config.qwenVoiceDesignName ?? "Profil VoiceDesign"
+        case .voiceClone:
+            return config.qwenVoiceCloneName ?? "Voix Qwen clonée"
+        case .customVoice:
+            return "\(config.resolvedQwenSpeakerId) (CustomVoice)"
+        }
+    }
+
+    private func qwenVoiceModeDescription(_ config: VoiceConfig) -> String {
+        switch config.resolvedQwenVoiceMode {
+        case .voiceDesign:
+            return "VoiceDesign conçoit une voix depuis sa description. Aucun sample audio n'est utilisé."
+        case .voiceClone:
+            return "Qwen Base reproduit le timbre du sample vocal et utilise sa transcription exacte."
+        case .customVoice:
+            return "CustomVoice utilise une voix intégrée au checkpoint. Aucun sample audio n'est utilisé."
+        }
+    }
     
     private func playPreview(project: Project) {
         let previewPath = "\(project.projectDirectory)/voice_preview.wav"

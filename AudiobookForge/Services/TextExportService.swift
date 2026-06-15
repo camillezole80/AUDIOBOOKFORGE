@@ -49,20 +49,21 @@ class TextExportService {
         content += "\n═══════════════════════════════════════════════════════════\n"
         content += "LÉGENDE DES BALISES ÉMOTIONNELLES\n"
         content += "═══════════════════════════════════════════════════════════\n\n"
-        content += "[whisper] - Chuchotement\n"
+        content += "[whispering] - Chuchotement\n"
         content += "[excited] - Excitation\n"
         content += "[sad] - Tristesse\n"
         content += "[angry] - Colère\n"
         content += "[laughing] - Rire\n"
-        content += "[chuckle] - Petit rire\n"
-        content += "[emphasis] - Emphase\n"
-        content += "[pause] - Pause\n"
+        content += "[chuckling] - Petit rire\n"
+        content += "[soft tone] - Ton doux\n"
+        content += "[break] - Pause courte\n"
+        content += "[long-break] - Pause longue\n"
         content += "[warm] - Chaleureux\n"
         content += "[tense] - Tendu\n"
         content += "[mysterious] - Mystérieux\n"
         content += "[professional broadcast tone] - Ton professionnel\n"
-        content += "[clearing throat] - Raclement de gorge\n"
-        content += "[inhale] - Inspiration\n"
+        content += "[sighing] - Soupir\n"
+        content += "[gasping] - Souffle coupé\n"
         
         // Écrire le fichier
         try content.write(toFile: outputPath, atomically: true, encoding: .utf8)
@@ -171,20 +172,21 @@ class TextExportService {
         htmlContent += """
         <div class='legend'>
             <h3>Légende des balises émotionnelles</h3>
-            <div class='legend-item'><span class='tag'>[whisper]</span> - Chuchotement</div>
+            <div class='legend-item'><span class='tag'>[whispering]</span> - Chuchotement</div>
             <div class='legend-item'><span class='tag'>[excited]</span> - Excitation</div>
             <div class='legend-item'><span class='tag'>[sad]</span> - Tristesse</div>
             <div class='legend-item'><span class='tag'>[angry]</span> - Colère</div>
             <div class='legend-item'><span class='tag'>[laughing]</span> - Rire</div>
-            <div class='legend-item'><span class='tag'>[chuckle]</span> - Petit rire</div>
-            <div class='legend-item'><span class='tag'>[emphasis]</span> - Emphase</div>
-            <div class='legend-item'><span class='tag'>[pause]</span> - Pause</div>
+            <div class='legend-item'><span class='tag'>[chuckling]</span> - Petit rire</div>
+            <div class='legend-item'><span class='tag'>[soft tone]</span> - Ton doux</div>
+            <div class='legend-item'><span class='tag'>[break]</span> - Pause courte</div>
+            <div class='legend-item'><span class='tag'>[long-break]</span> - Pause longue</div>
             <div class='legend-item'><span class='tag'>[warm]</span> - Chaleureux</div>
             <div class='legend-item'><span class='tag'>[tense]</span> - Tendu</div>
             <div class='legend-item'><span class='tag'>[mysterious]</span> - Mystérieux</div>
             <div class='legend-item'><span class='tag'>[professional broadcast tone]</span> - Ton professionnel</div>
-            <div class='legend-item'><span class='tag'>[clearing throat]</span> - Raclement de gorge</div>
-            <div class='legend-item'><span class='tag'>[inhale]</span> - Inspiration</div>
+            <div class='legend-item'><span class='tag'>[sighing]</span> - Soupir</div>
+            <div class='legend-item'><span class='tag'>[gasping]</span> - Souffle coupé</div>
         </div>
         """
         

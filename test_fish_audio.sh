@@ -87,7 +87,7 @@ echo ""
 # 3. Vérifier la configuration du projet
 info "3. Vérification de la configuration du projet..."
 
-PROJECT_JSON="/Volumes/J3THext/Audiobookforge/audio/Projects/nomduvent1/project.json"
+PROJECT_JSON="/Volumes/J3THext/Soft/AudiobookForge/audio/Projects/nomduvent1/project.json"
 
 if [ -f "$PROJECT_JSON" ]; then
     success "Fichier projet trouvé"
@@ -124,7 +124,7 @@ echo ""
 # 4. Vérifier le dossier models (local)
 info "4. Vérification du modèle local MLX..."
 
-MODELS_DIR="/Volumes/J3THext/Audiobookforge/models"
+MODELS_DIR="/Volumes/J3THext/Soft/AudiobookForge/models"
 
 if [ -d "$MODELS_DIR" ] && [ "$(ls -A $MODELS_DIR 2>/dev/null)" ]; then
     success "Modèle local trouvé"

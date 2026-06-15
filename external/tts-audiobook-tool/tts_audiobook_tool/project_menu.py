@@ -1,0 +1,297 @@
+from dataclasses import replace
+from tts_audiobook_tool.app_types import Strictness
+from tts_audiobook_tool.ask_util import AskUtil
+from tts_audiobook_tool.constants_config import *
+from tts_audiobook_tool.dir_open_util import DirOpenUtil
+from tts_audiobook_tool.menu_util import MenuItem, MenuUtil, should_show_menu_status_details
+from tts_audiobook_tool.project_new_menu import ProjectNewMenu
+from tts_audiobook_tool.project_util import ProjectUtil
+from tts_audiobook_tool.text_util import TextUtil
+from tts_audiobook_tool.tts import Tts
+from tts_audiobook_tool.tts_model.chatterbox_base_model import ChatterboxBaseModel, ChatterboxType
+from tts_audiobook_tool.tts_model.tts_model_info import TtsModelInfos
+from tts_audiobook_tool.util import *
+from tts_audiobook_tool.state import State
+from tts_audiobook_tool.validate_util import ValidateUtil
+from tts_audiobook_tool.whitelist import Whitelist
+
+class ProjectMenu:
+
+    @staticmethod
+    def menu(state:State) -> None:
+
+        def on_new_project(_: State, __: MenuItem) -> None:
+            ProjectNewMenu.menu(state)
+
+        def on_existing_project(_: State, __: MenuItem) -> bool:
+            did = ProjectMenu.ask_and_set_existing_project(state)
+            if did:
+                print_feedback("Project directory set:", state.project.dir_path)
+                return True
+            else:
+                return False
+
+        def on_view(_: State, __: MenuItem) -> None:
+            err = DirOpenUtil.open(state.project.dir_path)
+            if err:
+                AskUtil.ask_error(err)
+            else:
+                print_feedback("Launched window")
+
+        def on_clear_language(_: State, __: MenuItem) -> None:
+            state.project.language_code = ""
+            Whitelist().set_language_code("")
+            state.project.save()
+            print_feedback("Language code cleared")            
+
+        def items_maker(_) -> list[MenuItem]:
+
+            items = []
+
+            items.append( 
+                MenuItem("New project", on_new_project, data=True) 
+            )
+
+            items.append( 
+                MenuItem("Open existing project", on_existing_project, data=False) 
+            )
+
+            if state.project.dir_path:
+
+                items.append( 
+                    MenuItem(
+                        lambda _: make_menu_label("Language code", state.project.language_code or "none"), 
+                        on_language,
+                        superlabel="Options"
+                    )
+                )
+
+                if state.project.language_code:
+                    items.append(
+                        MenuItem("Clear language code", on_clear_language)
+                    )
+
+                items.append(
+                    MenuItem(
+                        make_subst_label, lambda _, __: ProjectMenu.word_substitutions_menu(state)
+                    )
+                )
+
+                items.append(
+                    MenuItem("Show directory in system file explorer", on_view)
+                )
+
+            return items
+
+        value = make_terminal_hyperlink(state.project.dir_path, is_file=True) if state.project.dir_path else "none"
+        heading = make_menu_label("Project", value) if should_show_menu_status_details(state) else "Project"
+        MenuUtil.menu(
+            state, 
+            heading,
+            items_maker,
+            breadcrumb="Project",
+        )
+
+    @staticmethod
+    def ask_and_set_existing_project(state: State) -> bool:
+        """
+        Asks user for directory and if valid, sets state to existing project
+        Returns True on success
+        """
+        s = "Enter existing project directory path:"
+        s2 = "Select existing project directory"
+        dir = AskUtil.ask_dir_path(s, s2, initialdir=state.project.dir_path, mustexist=True)
+        if not dir:
+            return False
+        err = ProjectUtil.is_valid_project_dir(dir)
+        if err:
+            AskUtil.ask_error(err)
+            return False
+
+        state.set_existing_project(dir)
+
+        # Show over-default-max-words hint
+        max_count = state.project.applied_max_words 
+        # TODO: Not doing this for now: ... or PhraseGroup.get_max_num_words(state.project.phrase_groups)
+        reco_range: tuple[int, int] = Tts.get_type().value.max_words_reco_range
+        if max_count > reco_range[1]:
+            message = HINT_MAX_WORDS_OVER_DEFAULT_MESSAGE
+            message = message.replace("%1", str(max_count))
+            reco_str = TtsModelInfos.recommended_range_string(Tts.get_type().value)
+            message = message.replace("%2", reco_str)
+            hint = Hint("", "FYI", message)
+            Hint.show_hint(hint, and_prompt=True)
+
+        return True
+
+    @staticmethod
+    def word_substitutions_menu(state: State) -> None:
+
+        def on_enter(_, __) -> None:
+            inp = AskUtil.ask(SUBSTITUTIONS_ASK_DESC, lower=False)
+            if not inp:
+                return 
+            # Add curlies
+            if not inp.startswith("{"):
+                inp = "{" + inp
+            if not inp.endswith("}"):
+                inp = inp + "}"
+            result = ProjectUtil.parse_word_substitutions_json_string(inp)
+            if isinstance(result, str):
+                print_feedback(result, is_error=True)
+                return 
+            state.project.word_substitutions = result
+            state.project.save()
+            print_feedback("Word substitutions set")
+            return 
+
+        def on_clear(_, __) -> None:
+            state.project.word_substitutions = {}
+            state.project.save()
+            print_feedback("Cleared")
+
+        def on_print(_, __) -> None:
+            MenuUtil.print_heading(state, "Current word substitutions")
+            s = str(state.project.word_substitutions)
+            printt(s)
+            print_feedback("", extra_line=False)
+            return 
+        
+        def on_inspect(_, __) -> None:
+            MenuUtil.print_heading(state, "Uncommon words")
+            printt(UNCOMMON_WORDS_DESC)
+            
+            # Make list of project text words (unfiltered, still including whitespace)
+            all_words_raw = [] 
+            for group in state.project.phrase_groups:
+                for phrase in group.phrases:
+                    all_words_raw.extend(phrase.words)
+
+            items = TextUtil.get_uncommon_words(all_words_raw)
+            if not items:
+                printt("None found")
+            else:
+                for i in range(0, min(len(items), 25)):
+                    item = items[i]
+                    word_str = f"{COL_DEFAULT}{item[0]}"
+                    num_str = f"{COL_DIM}{str(item[1]).rjust(3)}"
+                    instances_str = f"{COL_DEFAULT}{', '.join(item[2])}"
+                    print(f"{num_str}  {instances_str}")
+            print_feedback("", extra_line=False)
+
+        def items_maker(_) -> list[MenuItem]:
+            items = []
+            # Enter items
+            verb = "Replace" if state.project.word_substitutions else "Enter"
+            items.append( MenuItem(f"{verb} word substitutions", on_enter) )
+            # Clear items
+            if state.project.word_substitutions:
+                items.append(MenuItem("Clear", on_clear))
+            # Print items
+            if state.project.word_substitutions:
+                num_subst = len(state.project.word_substitutions)
+                value = f"{num_subst} {make_noun('item', 'items', num_subst)}" if num_subst > 0 else "none"
+                label = f"Word substitutions {make_currently_string(value)}"
+                items.append( MenuItem(label, on_print) )
+            # Print uncommon words
+            if Whitelist.supports_language(state.project.language_code) and state.project.phrase_groups:
+                items.append(MenuItem("Inspect project text for uncommon words", on_inspect))
+            return items
+
+        MenuUtil.menu(
+            state, 
+            heading=make_subst_label,
+            items=items_maker,
+            subheading=SUBSTITUTIONS_DESC,
+            breadcrumb="Word substitutions",
+        )
+
+# ---
+
+def make_subst_label(state: State) -> str:
+    num_subst = len(state.project.word_substitutions)
+    if num_subst > 0:
+        value = f"{num_subst} {make_noun('item', 'items', num_subst)}" if num_subst > 0 else "none"
+        label = f"Word substitutions {make_currently_string(value)}"
+    else:
+        label = f"Word substitutions {COL_DIM}(optional)"
+    return label
+
+def on_language(state: State, __: MenuItem) -> None:
+
+    MenuUtil.print_screen_heading(state, "Language code", breadcrumb="Language code")
+    printt(LANGUAGE_CODE_DESC)
+    printt()
+
+    # TODO: consider making this a property of TtsBaseModel
+    required_model_languages = []
+
+    # Chatterbox Multilingual special case
+    if Tts.get_type() == TtsModelInfos.CHATTERBOX and state.project.chatterbox_type == ChatterboxType.MULTILINGUAL:
+        instance = Tts.get_instance() # Force model instantiation
+        assert(isinstance(instance, ChatterboxBaseModel))
+        required_model_languages = instance.supported_languages_multi()
+        printt(f"Chatterbox-Multilingual requires one of the following language codes:\n{required_model_languages}")
+        printt()
+
+    def validator(code: str) -> str:
+
+        # (1) Super-basic syntax check
+        code = code.strip()
+        bad = len(code) > 5
+        bad = bad or not any(char.isalpha() for char in code)
+        if bad:
+            return "Bad value"
+
+        # (2) Required model language 
+        if required_model_languages and not code in required_model_languages:
+            return "Language code not supported by Chatterbox Multilingual"
+
+        # (3) Hint-side-effect re: CJK
+        if ValidateUtil.is_unsupported_language_code(code): # (not to be confused with chatterbox multilingual requirement)
+            text = HINT_VALIDATION_UNSUPPORTED_LANGUAGE.text.replace("%1", str(VALIDATION_UNSUPPORTED_LANGUAGES))
+            hint = replace(HINT_VALIDATION_UNSUPPORTED_LANGUAGE, text=text)
+            Hint.show_hint(hint, and_prompt=True)
+
+        # (4) Hint-side-effect re: strictness non-en
+        if not Whitelist.supports_language(code) and state.project.strictness != Strictness.LOW:
+            if not ValidateUtil.is_unsupported_language_code(code):
+                state.project.strictness = Strictness.LOW
+                state.project.save()
+                Hint.show_hint(HINT_FORCED_STRICTNESS_LOW, and_prompt=True)
+
+        return ""
+
+    prompt = f"Enter two-letter language code {COL_DIM}(Eg, \"en\", \"es\", \"zh\", \"pt\", etc){COL_DEFAULT}:"
+    AskUtil.ask_string_and_save(
+        state.project,
+        prompt,
+        "language_code",
+        "Project language code set to:",
+        validator=validator
+    )
+    Whitelist().set_language_code(state.project.language_code)
+
+LANGUAGE_CODE_DESC = "" + \
+"""Language code is used by the app at various stages of the pipeline as a \"hint\" for:
+- Semantic segmentation of imported text
+- Prompt pre-processing 
+- Whisper transcription
+- TTS inference (Chatterbox)"""
+
+SUBSTITUTIONS_DESC = \
+f"""List of words to be replaced in the TTS prompt at inference-time.
+Useful for helping the model pronounce proper names, neologisms, etc. 
+more accurately. {COL_DIM}(Requires some trial and error){COL_DEFAULT}
+"""
+
+SUBSTITUTIONS_ASK_DESC = \
+f"""Enter substitutions list. Use this format: 
+{COL_DIM_ITALICS}{{"Ariekei": "AriaKay", "kilohour": "kilo hour"}}
+ 
+"""
+
+UNCOMMON_WORDS_DESC = \
+f"""Words in the project text not found in the app's 
+English \"common words\" dictionary, sorted by frequency.
+"""

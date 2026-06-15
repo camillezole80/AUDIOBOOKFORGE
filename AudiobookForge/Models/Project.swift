@@ -30,9 +30,7 @@ struct Project: Identifiable, Codable, Hashable {
     }
 
     var projectDirectory: String {
-        // Utiliser le disque externe J3THext pour stocker les fichiers audio
-        let baseDir = "/Volumes/J3THext/Audiobookforge/audio/Projects"
-        return "\(baseDir)/\(name)"
+        "\(PathResolver.shared.projectsPath)/\(name)"
     }
 
     static func createDefault(name: String, sourcePath: String, fileType: FileType) -> Project {
@@ -78,12 +76,37 @@ struct Chapter: Identifiable, Codable {
     var title: String
     var rawText: String
     var taggedText: String?
+    var artDirection: ChapterArtDirection?
     var status: ChapterStatus
     var audioFilePath: String?
     var duration: TimeInterval?
 
     enum CodingKeys: String, CodingKey {
-        case id, index, title, rawText, taggedText, status, audioFilePath, duration
+        case id, index, title, rawText, taggedText, artDirection, status, audioFilePath, duration
+    }
+}
+
+struct ChapterArtDirection: Codable, Hashable {
+    var overallTone: String
+    var literaryStyle: String
+    var narrativeVoice: String
+    var pacing: String
+    var emotionalArc: String
+    var characterDynamics: String
+    var dialogueGuidance: String
+    var restraintNotes: String
+
+    var promptContext: String {
+        """
+        Ton général : \(overallTone)
+        Style littéraire : \(literaryStyle)
+        Voix narrative : \(narrativeVoice)
+        Rythme du chapitre : \(pacing)
+        Arc émotionnel : \(emotionalArc)
+        Personnages et dynamiques : \(characterDynamics)
+        Direction des dialogues : \(dialogueGuidance)
+        Points de retenue : \(restraintNotes)
+        """
     }
 }
 
@@ -120,6 +143,107 @@ struct VoiceConfig: Codable {
     var topP: Double? = nil
     var topK: Int? = nil
     var seed: Int? = nil
+    var qwenModelPath: String? = nil
+    var qwenSpeakerId: String? = nil
+    var qwenLanguage: String? = nil
+    var qwenVoiceMode: QwenVoiceMode? = nil
+    var qwenVoiceDesignProfileId: UUID? = nil
+    var qwenVoiceDesignName: String? = nil
+    var qwenVoiceDesignDescription: String? = nil
+    var qwenVoiceCloneName: String? = nil
+
+    static let defaultQwenModelPath =
+        "\(PathResolver.externalVolumeRoot)/LocalData/Models/Qwen3TTS/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    static let defaultQwenVoiceDesignModelPath =
+        "\(PathResolver.externalVolumeRoot)/LocalData/Models/Qwen3TTS/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+    static let defaultQwenVoiceCloneModelPath =
+        "\(PathResolver.externalVolumeRoot)/LocalData/Models/Qwen3TTS/Qwen3-TTS-12Hz-1.7B-Base"
+    static let qwenCustomVoiceSpeakers = [
+        "ryan", "aiden", "eric", "dylan", "serena",
+        "vivian", "uncle_fu", "ono_anna", "sohee",
+    ]
+
+    var resolvedQwenModelPath: String {
+        if let configured = qwenModelPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty {
+            return configured
+        }
+        switch resolvedQwenVoiceMode {
+        case .voiceDesign:
+            return Self.defaultQwenVoiceDesignModelPath
+        case .voiceClone:
+            return Self.defaultQwenVoiceCloneModelPath
+        case .customVoice:
+            return Self.defaultQwenModelPath
+        }
+    }
+
+    var resolvedQwenVoiceMode: QwenVoiceMode {
+        qwenVoiceMode ?? (qwenVoiceDesignProfileId == nil ? .customVoice : .voiceDesign)
+    }
+
+    var resolvedQwenSpeakerId: String {
+        qwenSpeakerId?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "ryan"
+    }
+
+    var resolvedQwenLanguage: String {
+        qwenLanguage?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "fr"
+    }
+
+    func resolvedQwenInstruction(expressiveInstruction: String?) -> String? {
+        let expression = expressiveInstruction?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty
+        let speed = qwenSpeedInstruction
+        let language = qwenLanguageInstruction
+        guard resolvedQwenVoiceMode == .voiceDesign else {
+            return [language, expression, speed]
+                .compactMap { $0 }
+                .joined(separator: ". ")
+                .nonEmpty
+        }
+
+        let voice = qwenVoiceDesignDescription?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty
+        return [language, voice, speed, expression, language]
+            .compactMap { $0 }
+            .joined(separator: ". ")
+            .nonEmpty
+    }
+
+    var resolvedQwenSeed: Int {
+        seed ?? 424_242
+    }
+
+    private var qwenLanguageInstruction: String? {
+        switch resolvedQwenLanguage.lowercased() {
+        case "fr", "fr-fr":
+            return """
+            Parler exclusivement en français métropolitain natif, avec une diction française \
+            naturelle. Ne jamais employer de prononciation anglaise ni d'accent étranger
+            """
+        default:
+            return nil
+        }
+    }
+
+    var qwenSpeedInstruction: String? {
+        switch speedScale {
+        case ..<0.80:
+            return "Speak very slowly, with long natural pauses and an unhurried rhythm"
+        case 0.80..<0.93:
+            return "Speak slowly, with measured pacing and natural pauses"
+        case 0.93..<1.08:
+            return nil
+        case 1.08..<1.18:
+            return "Speak briskly, with a lively but clearly articulated rhythm"
+        case 1.18..<1.45:
+            return "Speak quickly and energetically while remaining clear and intelligible"
+        default:
+            return "Speak extremely quickly with very short pauses, while preserving clear articulation and intelligibility"
+        }
+    }
 
     /// La configuration courante peut-elle générer de l'audio ?
     /// - Fish.Audio : exige un model_id (voix publique sélectionnée OU référence legacy).
@@ -130,7 +254,21 @@ struct VoiceConfig: Codable {
             let hasModelId = (selectedFishAudioVoice?.isEmpty == false)
                           || (fishAudioReferenceId?.isEmpty == false)
             return hasModelId
-        case .ttsAudiobookTool:
+        case .ttsAudiobookTool where ttsModel == .qwen3:
+            let modelExists = FileManager.default.fileExists(atPath: resolvedQwenModelPath)
+            if resolvedQwenVoiceMode == .voiceDesign {
+                return modelExists
+                    && qwenVoiceDesignDescription?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty == false
+            }
+            if resolvedQwenVoiceMode == .voiceClone {
+                return modelExists
+                    && FileManager.default.fileExists(atPath: referenceAudioPath)
+                    && !referenceTranscription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return modelExists && !resolvedQwenSpeakerId.isEmpty
+        case .mlxFishS2, .ttsAudiobookTool:
             return !referenceAudioPath.isEmpty && !referenceTranscription.isEmpty
         }
     }
@@ -141,7 +279,18 @@ struct VoiceConfig: Codable {
         switch preferredProvider {
         case .fishAudio:
             return "Sélectionnez une voix Fish.Audio dans les Réglages audio (icône 🔊)."
+        case .mlxFishS2:
+            return "MLX Fish S2-Pro nécessite un sample audio + sa transcription (onglet Voix)."
         case .ttsAudiobookTool:
+            if ttsModel == .qwen3 {
+                if resolvedQwenVoiceMode == .voiceDesign {
+                    return "Sélectionnez une voix VoiceDesign valide, enregistrée sur J3THext."
+                }
+                if resolvedQwenVoiceMode == .voiceClone {
+                    return "Le clonage Qwen nécessite un sample audio et sa transcription exacte."
+                }
+                return "Le checkpoint Qwen3-TTS CustomVoice est introuvable sur J3THext."
+            }
             return "Importez un sample audio + sa transcription dans l'onglet Voix."
         }
     }
@@ -153,10 +302,22 @@ struct VoiceConfig: Codable {
         switch preferredProvider {
         case .fishAudio:
             return true  // s2-pro lit nativement
+        case .mlxFishS2:
+            return true  // même modèle Fish-S2, quantizé en INT8
         case .ttsAudiobookTool:
             return ttsModel.supportsEmotionalTags
         }
     }
+}
+
+enum QwenVoiceMode: String, Codable, CaseIterable {
+    case customVoice
+    case voiceDesign
+    case voiceClone
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }
 
 struct VoiceProfile: Identifiable, Codable {
@@ -207,13 +368,91 @@ struct AIConfig: Codable {
     var forceRemote: Bool = false
     var fallbackToRemote: Bool = true
     var showCostEstimate: Bool = true
-    
+    var taggingMode: TaggingMode = .fishS2
+
     // Modèles personnalisables
     var openaiModel: String = "gpt-4o-mini"
     var anthropicModel: String = "claude-3-5-sonnet-20241022"
-    var deepseekModel: String = "deepseek-chat"
-    
+    var deepseekModel: String = "deepseek-v4-flash"
+
+    /// Densité de balises injectées par l'IA, de 0 (quasi aucune) à 1 (beaucoup).
+    /// 0.5 = défaut "1 balise toutes les 3-4 phrases".
+    var tagDensity: Double = 0.5
+
     // Note: Les clés API sont stockées dans le Keychain, pas ici
+
+    private enum CodingKeys: String, CodingKey {
+        case preferredProvider, forceRemote, fallbackToRemote, showCostEstimate
+        case taggingMode, openaiModel, anthropicModel, deepseekModel, tagDensity
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        preferredProvider = try container.decodeIfPresent(AIProvider.self, forKey: .preferredProvider) ?? .ollama
+        forceRemote = try container.decodeIfPresent(Bool.self, forKey: .forceRemote) ?? false
+        fallbackToRemote = try container.decodeIfPresent(Bool.self, forKey: .fallbackToRemote) ?? true
+        showCostEstimate = try container.decodeIfPresent(Bool.self, forKey: .showCostEstimate) ?? true
+        taggingMode = try container.decodeIfPresent(TaggingMode.self, forKey: .taggingMode) ?? .fishS2
+        openaiModel = try container.decodeIfPresent(String.self, forKey: .openaiModel) ?? "gpt-4o-mini"
+        anthropicModel = try container.decodeIfPresent(String.self, forKey: .anthropicModel) ?? "claude-3-5-sonnet-20241022"
+
+        let savedDeepSeekModel = try container.decodeIfPresent(String.self, forKey: .deepseekModel)
+        deepseekModel = savedDeepSeekModel == nil || savedDeepSeekModel == "deepseek-chat"
+            ? "deepseek-v4-flash"
+            : savedDeepSeekModel!
+        tagDensity = try container.decodeIfPresent(Double.self, forKey: .tagDensity) ?? 0.5
+    }
+}
+
+enum TaggingMode: String, Codable, CaseIterable, Identifiable {
+    case none
+    case fishS2
+    case qwen3TTS
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .none: return "Aucun"
+        case .fishS2: return "Fish S2"
+        case .qwen3TTS: return "Qwen3-TTS"
+        }
+    }
+
+    var shortDescription: String {
+        switch self {
+        case .none:
+            return "Le texte original est envoyé au moteur sans enrichissement."
+        case .fishS2:
+            return "Marqueurs Fish S2, par exemple [whispering] ou [excited]."
+        case .qwen3TTS:
+            return "Instructions expressives internes transmises séparément à Qwen3-TTS."
+        }
+    }
+
+    var usesAI: Bool { self != .none }
+}
+
+/// Convertit une valeur 0..1 en consigne textuelle injectée dans le prompt LLM.
+/// Centralisé ici pour que Ollama et les providers distants produisent un balisage
+/// cohérent en intensité.
+extension AIConfig {
+    var tagDensityInstruction: String {
+        switch tagDensity {
+        case ..<0.15:
+            return "TRÈS PEU de balises : maximum 1 balise toutes les 10-15 phrases, uniquement aux moments les plus forts du texte"
+        case 0.15..<0.4:
+            return "PEU de balises : environ 1 balise toutes les 6-8 phrases, réservées aux passages émotionnels marqués"
+        case 0.4..<0.65:
+            return "balisage MODÉRÉ : environ 1 balise toutes les 3-4 phrases en moyenne"
+        case 0.65..<0.85:
+            return "balisage DENSE : environ 1 balise toutes les 2 phrases, en suivant attentivement les changements de ton"
+        default:
+            return "balisage TRÈS DENSE : presque chaque phrase a une balise, suivez précisément chaque nuance émotionnelle (attention à ne pas saturer la narration)"
+        }
+    }
 }
 
 enum AIProvider: String, Codable, CaseIterable {
@@ -242,12 +481,14 @@ enum AIProvider: String, Codable, CaseIterable {
 
 enum AudioProvider: String, Codable, CaseIterable {
     case fishAudio = "fishAudio"
+    case mlxFishS2 = "mlxFishS2"         // MLX Fish-S2-Pro INT8 (local, optimisé Apple Silicon)
     case ttsAudiobookTool = "ttsAudiobookTool"
 
     var displayName: String {
         switch self {
         case .fishAudio: return "Fish.Audio API (Cloud)"
-        case .ttsAudiobookTool: return "TTS Audiobook Tool (Local)"
+        case .mlxFishS2: return "Fish S2-Pro MLX INT8 (Local, M-series)"
+        case .ttsAudiobookTool: return "TTS Audiobook Tool (Local, multi-modèles)"
         }
     }
 
@@ -257,20 +498,21 @@ enum AudioProvider: String, Codable, CaseIterable {
 
     var costPer1MBytes: Double {
         switch self {
-        case .fishAudio: return 15.0  // $15 per 1M bytes UTF-8
-        case .ttsAudiobookTool: return 0.0
+        case .fishAudio: return 15.0
+        case .mlxFishS2, .ttsAudiobookTool: return 0.0
         }
     }
 
     /// Le provider lit-il nativement les balises émotionnelles Fish-style
-    /// ([whisper], [excited], …) ? Si non, les balises doivent être strippées
+    /// ([whispering], [excited], …) ? Si non, les balises doivent être strippées
     /// avant l'envoi au moteur sous peine d'être prononcées comme du texte.
     /// Pour TTS Audiobook Tool, la réponse dépend du modèle choisi
     /// (`TtsModelType.supportsEmotionalTags`).
     var supportsEmotionalTags: Bool {
         switch self {
         case .fishAudio: return true
-        case .ttsAudiobookTool: return false  // par défaut ; surchargé par le modèle
+        case .mlxFishS2: return true  // même modèle Fish-S2, balises lues nativement
+        case .ttsAudiobookTool: return false  // dépend du modèle (cf. TtsModelType)
         }
     }
 }

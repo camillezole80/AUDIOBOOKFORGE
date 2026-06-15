@@ -50,16 +50,18 @@ struct ContentView: View {
                 .environmentObject(projectListVM)
         }
         .sheet(isPresented: $showAISettingsSheet) {
-            if var project = selectedProject {
-                AISettingsView(aiConfig: Binding(
-                    get: { project.aiConfig },
-                    set: { newConfig in
-                        project.aiConfig = newConfig
-                        ProjectManager.shared.updateProject(project)
-                        selectedProject = project
-                    }
-                ))
-            }
+            // IMPORTANT : on lit selectedProject AU MOMENT du get (pas une copie capturée)
+            // pour que les mutations consécutives accumulent leur effet sans se baser
+            // sur un snapshot périmé. Cf. project_swiftui_binding_capture.md
+            AISettingsView(aiConfig: Binding(
+                get: { selectedProject?.aiConfig ?? AIConfig() },
+                set: { newConfig in
+                    guard var project = selectedProject else { return }
+                    project.aiConfig = newConfig
+                    ProjectManager.shared.updateProject(project)
+                    selectedProject = project
+                }
+            ))
         }
         .onAppear {
             projectListVM.loadProjects()

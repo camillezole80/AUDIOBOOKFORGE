@@ -1,0 +1,31 @@
+#!/bin/zsh
+
+set -u
+
+ROOT="/Volumes/J3THext/Soft/AudiobookForge"
+LOG_DIR="$HOME/Library/Logs/AudiobookForge"
+LOG_FILE="$LOG_DIR/launcher.log"
+
+mkdir -p "$LOG_DIR"
+
+show_error() {
+    /usr/bin/osascript -e \
+        "display alert \"AudiobookForge\" message \"$1\" as critical buttons {\"OK\"} default button \"OK\""
+}
+
+if [[ ! -d "$ROOT" ]]; then
+    show_error "Le disque J3THext n'est pas connecté, ou le projet est introuvable."
+    exit 1
+fi
+
+export AUDIOBOOKFORGE_ROOT="$ROOT"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+if [[ ! -x "$ROOT/.build/debug/AudiobookForge" ]]; then
+    show_error "La dernière version compilée d'AudiobookForge est introuvable."
+    exit 1
+fi
+
+cd /private/tmp || exit 1
+echo "=== Lancement $(/bin/date) : $ROOT/.build/debug/AudiobookForge ===" >> "$LOG_FILE"
+exec "$ROOT/.build/debug/AudiobookForge" >> "$LOG_FILE" 2>&1

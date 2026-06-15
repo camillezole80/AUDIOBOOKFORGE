@@ -1,0 +1,18 @@
+{
+
+    "pythonVersion": "3.11", 
+
+    "typeCheckingMode": "standard",
+
+    "reportUnusedImport": "error",
+
+    "exclude": [
+        "**/.*",
+        "**/node_modules",
+        "**/__pycache__",
+        "**/venv*"
+    ],
+    "ignore": [
+        "**/venv*"
+    ]
+}
